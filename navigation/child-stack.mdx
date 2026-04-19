@@ -1,0 +1,343 @@
+---
+title: "Child Stack: Back-Stack Navigation for Decompose KMP"
+description: "Set up back-stack navigation in Decompose with StackNavigation and childStack(). Covers push, pop, replace, deep linking, and a complete component example."
+---
+
+Child Stack is the most commonly used Decompose navigation model. It manages a stack of child components where only the top-most component is active, and every component below it in the back stack is stopped—allowing business logic to keep running even when a screen is not visible.
+
+## Core concepts
+
+The `Child Stack` is built from two types:
+
+- **`ChildStack<C, T>`** — a data class holding the full stack state. `active` is the currently resumed top-most child; `backStack` is the list of stopped children below it.
+- **`StackNavigation<C>`** — the mutable handle you call navigation methods on. It implements `StackNavigator<C>`, which has a single low-level `navigate(transformer, onComplete)` method. In practice you will use the extension functions described below.
+
+## Setting up Child Stack
+
+<Steps>
+  <Step title="Create a StackNavigation instance">
+    Instantiate `StackNavigation` and store it in a property. This is the object you call navigation operations on.
+
+    ```kotlin
+    private val navigation = StackNavigation<Config>()
+    ```
+  </Step>
+  <Step title="Call childStack() on ComponentContext">
+    Use the `childStack` extension function to create a `Value<ChildStack<Config, Child>>` that the UI can observe.
+
+    ```kotlin
+    val childStack: Value<ChildStack<*, Child>> =
+        childStack(
+            source = navigation,
+            serializer = Config.serializer(), // null to disable state saving
+            initialConfiguration = Config.List,
+            handleBackButton = true,
+            childFactory = ::createChild,
+        )
+    ```
+  </Step>
+  <Step title="Observe and render in the UI">
+    Subscribe to the `Value<ChildStack>` in your Compose UI using the `Children` composable from the Decompose Compose extensions module, or observe it manually in any UI toolkit.
+  </Step>
+</Steps>
+
+### childStack() parameters
+
+<ParamField path="source" type="NavigationSource<StackNavEvent<C>>" required>
+  The `StackNavigation` instance that drives this stack.
+</ParamField>
+
+<ParamField path="serializer" type="KSerializer<C>?">
+  A kotlinx-serialization serializer for the configuration type. Pass `null` to opt out of navigation state persistence; the stack will be reset to `initialConfiguration` on process recreation.
+</ParamField>
+
+<ParamField path="initialConfiguration" type="C">
+  The single configuration placed at the bottom of the stack when first created. Mutually exclusive with `initialStack`.
+</ParamField>
+
+<ParamField path="initialStack" type="() -> List<C>">
+  A factory returning the full initial stack (bottom to top). Use this for deep linking. Mutually exclusive with `initialConfiguration`.
+</ParamField>
+
+<ParamField path="key" type="String" default="DefaultChildStack">
+  Unique key within the parent component. Required when you have two or more Child Stacks in the same parent.
+</ParamField>
+
+<ParamField path="handleBackButton" type="Boolean" default="false">
+  When `true`, Decompose automatically pops the top entry from the stack on a system back-button press.
+</ParamField>
+
+<ParamField path="childFactory" type="(C, ComponentContext) -> T">
+  Factory function called whenever a new child component instance is needed. Instantiate your child component and inject dependencies here.
+</ParamField>
+
+## Navigation operations
+
+All operations are extension functions on `StackNavigator` (implemented by `StackNavigation`).
+
+### push(configuration)
+
+Pushes the provided configuration to the top of the stack. Throws if the configuration is already present anywhere in the stack.
+
+```kotlin
+navigation.push(Config.Details(itemId = 42L))
+```
+
+<Tip>
+  Prefer `pushNew` over `push` when navigating on user interaction (e.g., a button click). `push` throws on duplicates; `pushNew` silently ignores a tap that would push the same screen that is already on top.
+</Tip>
+
+### pushNew(configuration)
+
+Pushes the configuration to the top. Does nothing if the exact same configuration is already the active top entry. Throws if the configuration is in the back stack (not at the top).
+
+```kotlin
+// Safe to call repeatedly — no double-push on fast taps
+navigation.pushNew(Config.Details(itemId = 42L))
+```
+
+### pushToFront(configuration)
+
+Moves the configuration to the top of the stack, removing it from the back stack if it was already there. Compares by equality (unlike `bringToFront` which compares by class).
+
+```kotlin
+// [A(1), B(1), A(2)] --pushToFront(A(1))--> [B(1), A(2), A(1)*]
+navigation.pushToFront(Config.A(id = 1))
+```
+
+### pop
+
+Removes the top-most configuration from the stack. An optional `onComplete` callback receives a boolean indicating whether a pop actually occurred (the stack must have at least two entries to pop).
+
+```kotlin
+navigation.pop()
+
+// With completion callback
+navigation.pop { isSuccess ->
+    if (isSuccess) { /* component was popped */ }
+}
+```
+
+### popWhile(predicate)
+
+Pops configurations from the top as long as the predicate returns `true`.
+
+```kotlin
+// Pop until the stack top is Config.Home
+navigation.popWhile { it !is Config.Home }
+```
+
+### popTo(index)
+
+Pops configurations until the entry at the given index becomes the active top.
+
+```kotlin
+// [A, B, C, D*] --popTo(1)--> [A, B*]
+navigation.popTo(index = 1)
+```
+
+### replaceCurrent(configuration)
+
+Replaces the top-most configuration with the provided one. The previous top component is destroyed.
+
+```kotlin
+// [A, B, C*] --replaceCurrent(D)--> [A, B, D*]
+navigation.replaceCurrent(Config.D)
+```
+
+### replaceAll(vararg configurations)
+
+Replaces the entire stack with the provided configurations. Components that still appear in the new stack are not recreated; components removed from the stack are destroyed.
+
+```kotlin
+// [A, B, C*] --replaceAll(B, C, D)--> [B, C, D*]
+navigation.replaceAll(Config.B, Config.C, Config.D)
+```
+
+### bringToFront(configuration)
+
+Removes all existing entries whose configuration class matches the provided configuration's class, then pushes the provided configuration to the top. Useful for bottom-navigation tab switching.
+
+```kotlin
+// [A, B, C*] --bringToFront(B)--> [A, C, B*]
+navigation.bringToFront(Config.B)
+```
+
+## Full example
+
+The following example wires together two child components through a root component using `childStack`.
+
+<CodeGroup>
+
+```kotlin ItemListComponent.kt
+import com.arkivanov.decompose.ComponentContext
+
+interface ItemListComponent {
+    fun onItemClicked(id: Long)
+}
+
+class DefaultItemListComponent(
+    componentContext: ComponentContext,
+    private val onItemSelected: (id: Long) -> Unit,
+) : ItemListComponent, ComponentContext by componentContext {
+
+    override fun onItemClicked(id: Long) {
+        onItemSelected(id)
+    }
+}
+```
+
+```kotlin ItemDetailsComponent.kt
+import com.arkivanov.decompose.ComponentContext
+
+interface ItemDetailsComponent {
+    fun onCloseClicked()
+}
+
+class DefaultItemDetailsComponent(
+    componentContext: ComponentContext,
+    val itemId: Long,
+    private val onFinished: () -> Unit,
+) : ItemDetailsComponent, ComponentContext by componentContext {
+
+    override fun onCloseClicked() {
+        onFinished()
+    }
+}
+```
+
+```kotlin DefaultRootComponent.kt
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.router.stack.ChildStack
+import com.arkivanov.decompose.router.stack.StackNavigation
+import com.arkivanov.decompose.router.stack.childStack
+import com.arkivanov.decompose.router.stack.pop
+import com.arkivanov.decompose.router.stack.push
+import com.arkivanov.decompose.value.Value
+import kotlinx.serialization.Serializable
+
+interface RootComponent {
+    val childStack: Value<ChildStack<*, Child>>
+
+    sealed class Child {
+        class ListChild(val component: ItemListComponent) : Child()
+        class DetailsChild(val component: ItemDetailsComponent) : Child()
+    }
+}
+
+class DefaultRootComponent(
+    componentContext: ComponentContext,
+) : RootComponent, ComponentContext by componentContext {
+
+    private val navigation = StackNavigation<Config>()
+
+    override val childStack: Value<ChildStack<*, RootComponent.Child>> =
+        childStack(
+            source = navigation,
+            serializer = Config.serializer(),
+            initialConfiguration = Config.List,
+            handleBackButton = true,
+            childFactory = ::createChild,
+        )
+
+    private fun createChild(
+        config: Config,
+        componentContext: ComponentContext,
+    ): RootComponent.Child =
+        when (config) {
+            is Config.List -> RootComponent.Child.ListChild(itemList(componentContext))
+            is Config.Details -> RootComponent.Child.DetailsChild(
+                itemDetails(componentContext, config)
+            )
+        }
+
+    private fun itemList(componentContext: ComponentContext): ItemListComponent =
+        DefaultItemListComponent(
+            componentContext = componentContext,
+            onItemSelected = { id -> navigation.push(Config.Details(itemId = id)) },
+        )
+
+    private fun itemDetails(
+        componentContext: ComponentContext,
+        config: Config.Details,
+    ): ItemDetailsComponent =
+        DefaultItemDetailsComponent(
+            componentContext = componentContext,
+            itemId = config.itemId,
+            onFinished = { navigation.pop() },
+        )
+
+    @Serializable
+    private sealed class Config {
+        @Serializable
+        data object List : Config()
+
+        @Serializable
+        data class Details(val itemId: Long) : Config()
+    }
+}
+```
+
+</CodeGroup>
+
+## Deep linking with initialStack
+
+To open the app at a specific location in the stack—for example, from a push notification or a URL—use `initialStack` instead of `initialConfiguration`:
+
+```kotlin
+childStack(
+    source = navigation,
+    serializer = Config.serializer(),
+    initialStack = {
+        // Parse deepLinkUrl and return the full stack
+        listOf(Config.List, Config.Details(itemId = parsedId))
+    },
+    handleBackButton = true,
+    childFactory = ::createChild,
+)
+```
+
+## Multiple Child Stacks in one component
+
+When a component hosts more than one `Child Stack`, each must have a unique `key`:
+
+```kotlin
+private val topStack = childStack<TopConfig, TopChild>(
+    source = topNavigation,
+    key = "TopStack",
+    // ...
+)
+
+private val bottomStack = childStack<BottomConfig, BottomChild>(
+    source = bottomNavigation,
+    key = "BottomStack",
+    // ...
+)
+```
+
+## Delivering a result when navigating back
+
+Pass a callback to the child component and call it before or during `navigation.pop`:
+
+```kotlin
+private fun itemDetails(
+    componentContext: ComponentContext,
+    config: Config.Details,
+): ItemDetailsComponent =
+    DefaultItemDetailsComponent(
+        componentContext = componentContext,
+        itemId = config.itemId,
+        onDeleted = { deletedId ->
+            navigation.pop {
+                // Stack has been popped — deliver the result to the list
+                (childStack.active.instance as? RootComponent.Child.ListChild)
+                    ?.component
+                    ?.onItemDeleted(id = deletedId)
+            }
+        },
+    )
+```
+
+<Note>
+  The `Child Stack` is never empty — there is always at least one active (resumed) component. Attempting to pop the last remaining entry does nothing (the `isSuccess` callback parameter will be `false`).
+</Note>

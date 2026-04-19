@@ -1,0 +1,597 @@
+---
+title: "Quickstart: First Decompose Component with Navigation"
+description: "Create a working Kotlin Multiplatform component with Child Stack navigation, observable state, and platform-specific initialization for Android, Desktop, iOS, and Web."
+---
+
+Decompose lets you build lifecycle-aware business logic components in pure Kotlin and connect them to any UI framework. This guide walks you through the complete journey from the simplest possible component to a working Child Stack navigation setup, covering observable state with `Value`, platform-specific root initialization, and Compose and SwiftUI UI integration. A [template repository](https://github.com/arkivanov/decompose-multiplatform-template) is also available if you want to skip ahead.
+
+<Note>
+  If you have questions or ideas, visit [GitHub Discussions](https://github.com/arkivanov/Decompose/discussions) or join the [#decompose](https://kotlinlang.slack.com/archives/C03H3N51SKT) channel on Kotlin Slack.
+</Note>
+
+<Steps>
+  <Step title="Create a simple component">
+    The simplest Decompose component is a plain Kotlin class — no base class to extend, no interface to implement.
+
+    ```kotlin
+    class RootComponent
+    ```
+
+    That is a valid component. Decompose does not require you to inherit from any library type.
+  </Step>
+
+  <Step title="Extract an interface">
+    Extracting an interface for your component makes it possible to create test doubles for integration tests and fake implementations for UI previews (in Compose or SwiftUI).
+
+    ```kotlin
+    interface RootComponent
+
+    class DefaultRootComponent : RootComponent
+    ```
+  </Step>
+
+  <Step title="Add ComponentContext">
+    `ComponentContext` is the most important concept in Decompose. It gives each component access to:
+
+    - **Lifecycle** — observe start/stop/destroy events
+    - **StateKeeper** — persist state across process death
+    - **InstanceKeeper** — retain instances across configuration changes (like AndroidX `ViewModel`)
+    - **BackHandler** — intercept back-button presses
+
+    Pass `ComponentContext` via the constructor and use the delegation pattern (`by componentContext`) to bring all its APIs directly into scope.
+
+    ```kotlin
+    import com.arkivanov.decompose.ComponentContext
+
+    class DefaultRootComponent(
+        componentContext: ComponentContext,
+    ) : RootComponent, ComponentContext by componentContext {
+
+        init {
+            lifecycle...     // Access the Lifecycle
+            stateKeeper...   // Access the StateKeeper
+            instanceKeeper... // Access the InstanceKeeper
+            backHandler...   // Access the BackHandler
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Expose observable state with Value">
+    Decompose provides `Value<T>` and `MutableValue<T>` — a multiplatform observable state holder that integrates with Compose, SwiftUI, and Kotlin/React without requiring coroutines.
+
+    Define the state type in the interface and back it with a `MutableValue` in the implementation:
+
+    ```kotlin
+    import com.arkivanov.decompose.ComponentContext
+    import com.arkivanov.decompose.value.MutableValue
+    import com.arkivanov.decompose.value.Value
+
+    interface ListComponent {
+        val model: Value<Model>
+
+        fun onItemClicked(item: String)
+
+        data class Model(
+            val items: List<String>,
+        )
+    }
+
+    class DefaultListComponent(
+        componentContext: ComponentContext,
+        private val onItemSelected: (item: String) -> Unit,
+    ) : ListComponent {
+        override val model: Value<ListComponent.Model> =
+            MutableValue(ListComponent.Model(items = List(100) { "Item $it" }))
+
+        override fun onItemClicked(item: String) {
+            onItemSelected(item)
+        }
+    }
+    ```
+
+    <Tabs>
+      <Tab title="Observe in Compose">
+        Use the `subscribeAsState` extension function from `extensions-compose` to observe a `Value` as Compose state:
+
+        ```kotlin
+        import androidx.compose.foundation.clickable
+        import androidx.compose.foundation.lazy.LazyColumn
+        import androidx.compose.foundation.lazy.items
+        import androidx.compose.material.Text
+        import androidx.compose.runtime.Composable
+        import androidx.compose.runtime.getValue
+        import androidx.compose.ui.Modifier
+        import com.arkivanov.decompose.extensions.compose.subscribeAsState
+
+        @Composable
+        fun ListContent(component: ListComponent, modifier: Modifier = Modifier) {
+            val model by component.model.subscribeAsState()
+
+            LazyColumn {
+                items(items = model.items) { item ->
+                    Text(
+                        text = item,
+                        modifier = Modifier.clickable { component.onItemClicked(item = item) },
+                    )
+                }
+            }
+        }
+        ```
+      </Tab>
+      <Tab title="Observe in SwiftUI">
+        Use the `StateValue` property wrapper to observe a `Value` in SwiftUI. Because SwiftUI utilities cannot be published as a framework, [copy `StateValue.swift`](https://github.com/arkivanov/Decompose/blob/master/sample/app-ios/app-ios/DecomposeHelpers/StateValue.swift) from the sample into your Xcode project.
+
+        ```swift
+        struct DetailsView: View {
+            private let list: ListComponent
+
+            @StateValue
+            private var model: ListComponentModel
+
+            init(_ list: ListComponent) {
+                self.list = list
+                _model = StateValue(list.model)
+            }
+
+            var body: some View {
+                List(model.items, ...) { item in
+                    // Display the item
+                }
+            }
+        }
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Set up Child Stack navigation">
+    Child Stack is the most common Decompose navigation pattern. It maintains a back-stack of child components and handles back-button presses automatically.
+
+    Each child is identified by a `@Serializable` configuration class that holds its type-safe arguments. Decompose uses [kotlinx-serialization](https://github.com/Kotlin/kotlinx.serialization) to persist configurations across process death.
+
+    ```kotlin
+    import com.arkivanov.decompose.ComponentContext
+    import com.arkivanov.decompose.router.stack.ChildStack
+    import com.arkivanov.decompose.router.stack.StackNavigation
+    import com.arkivanov.decompose.router.stack.childStack
+    import com.arkivanov.decompose.router.stack.pop
+    import com.arkivanov.decompose.router.stack.popTo
+    import com.arkivanov.decompose.router.stack.push
+    import com.arkivanov.decompose.value.Value
+    import kotlinx.serialization.Serializable
+
+    interface RootComponent {
+        val stack: Value<ChildStack<*, Child>>
+
+        // Allows popping multiple screens at once — useful on iOS
+        fun onBackClicked(toIndex: Int)
+
+        sealed class Child {
+            class ListChild(val component: ListComponent) : Child()
+            class DetailsChild(val component: DetailsComponent) : Child()
+        }
+    }
+
+    class DefaultRootComponent(
+        componentContext: ComponentContext,
+    ) : RootComponent, ComponentContext by componentContext {
+
+        private val navigation = StackNavigation<Config>()
+
+        override val stack: Value<ChildStack<*, RootComponent.Child>> =
+            childStack(
+                source = navigation,
+                serializer = Config.serializer(),
+                initialConfiguration = Config.List,  // Start with the List screen
+                handleBackButton = true,              // Auto-pop on back press
+                childFactory = ::child,
+            )
+
+        private fun child(config: Config, componentContext: ComponentContext): RootComponent.Child =
+            when (config) {
+                is Config.List -> RootComponent.Child.ListChild(listComponent(componentContext))
+                is Config.Details -> RootComponent.Child.DetailsChild(detailsComponent(componentContext, config))
+            }
+
+        private fun listComponent(componentContext: ComponentContext): ListComponent =
+            DefaultListComponent(
+                componentContext = componentContext,
+                onItemSelected = { item: String ->
+                    navigation.push(Config.Details(item = item))
+                },
+            )
+
+        private fun detailsComponent(
+            componentContext: ComponentContext,
+            config: Config.Details,
+        ): DetailsComponent =
+            DefaultDetailsComponent(
+                componentContext = componentContext,
+                item = config.item,        // Type-safe argument from the configuration
+                onFinished = navigation::pop,
+            )
+
+        override fun onBackClicked(toIndex: Int) {
+            navigation.popTo(index = toIndex)
+        }
+
+        @Serializable
+        private sealed interface Config {
+            @Serializable
+            data object List : Config
+
+            @Serializable
+            data class Details(val item: String) : Config
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Render the Child Stack in Compose">
+    Use the `Children` composable from `extensions-compose` to render whichever child is currently active on the stack. You can pass a `stackAnimation` to animate transitions.
+
+    ```kotlin
+    import androidx.compose.runtime.Composable
+    import androidx.compose.ui.Modifier
+    import com.arkivanov.decompose.extensions.compose.jetbrains.stack.Children
+    import com.arkivanov.decompose.extensions.compose.jetbrains.stack.animation.fade
+    import com.arkivanov.decompose.extensions.compose.jetbrains.stack.animation.stackAnimation
+
+    @Composable
+    fun RootContent(component: RootComponent, modifier: Modifier = Modifier) {
+        Children(
+            stack = component.stack,
+            modifier = modifier,
+            animation = stackAnimation(fade()),
+        ) {
+            when (val child = it.instance) {
+                is RootComponent.Child.ListChild -> ListContent(component = child.component)
+                is RootComponent.Child.DetailsChild -> DetailsContent(component = child.component)
+            }
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Render the Child Stack in SwiftUI">
+    Use `StackView` to display the Child Stack with native SwiftUI navigation. [Copy `StackView.swift`](https://github.com/arkivanov/Decompose/blob/master/sample/app-ios/app-ios/DecomposeHelpers/StackView.swift) from the sample into your Xcode project — it wraps the native `NavigationStack` and provides the native UX.
+
+    ```swift
+    struct RootView: View {
+        let root: RootComponent
+
+        var body: some View {
+            StackView(
+                stackValue: StateValue(root.stack),
+                getTitle: {
+                    switch $0 {
+                    case is RootComponentChild.ListChild: return "List"
+                    case is RootComponentChild.DetailsChild: return "Details"
+                    default: return ""
+                    }
+                },
+                onBack: root.onBackClicked,
+                childContent: {
+                    switch $0 {
+                    case let child as RootComponentChild.ListChild: ListView(child.component)
+                    case let child as RootComponentChild.DetailsChild: DetailsView(child.component)
+                    default: EmptyView()
+                    }
+                }
+            )
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Initialize the root component per platform">
+    The root component must be created on the main thread, outside of any composable or view, and given a `ComponentContext` that is bound to the appropriate platform lifecycle.
+
+    <Tabs>
+      <Tab title="Android">
+        Use `defaultComponentContext()` inside `Activity.onCreate`. It binds the root `ComponentContext` to the Activity's lifecycle, state saving, and back-button handling automatically.
+
+        <Warning>
+          Call `defaultComponentContext()` only once during the lifetime of the host Activity or Fragment — typically in `onCreate`. Calling it a second time will throw an exception.
+        </Warning>
+
+        ```kotlin
+        import android.os.Bundle
+        import androidx.activity.compose.setContent
+        import androidx.appcompat.app.AppCompatActivity
+        import androidx.compose.foundation.layout.fillMaxSize
+        import androidx.compose.material.MaterialTheme
+        import androidx.compose.material.Surface
+        import androidx.compose.ui.Modifier
+        import com.arkivanov.decompose.defaultComponentContext
+
+        class MainActivity : AppCompatActivity() {
+            override fun onCreate(savedInstanceState: Bundle?) {
+                super.onCreate(savedInstanceState)
+
+                // Always create the root component outside Compose on the main thread
+                val root = DefaultRootComponent(
+                    componentContext = defaultComponentContext(),
+                )
+
+                setContent {
+                    MaterialTheme {
+                        Surface {
+                            RootContent(component = root, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+            }
+        }
+        ```
+      </Tab>
+      <Tab title="Desktop">
+        Create a `LifecycleRegistry` manually and bind it to the window state via `LifecycleController`. Create the root component on the UI thread before entering the Compose `application` block.
+
+        ```kotlin
+        import androidx.compose.foundation.layout.fillMaxSize
+        import androidx.compose.material.MaterialTheme
+        import androidx.compose.material.Surface
+        import androidx.compose.ui.Modifier
+        import androidx.compose.ui.window.Window
+        import androidx.compose.ui.window.application
+        import androidx.compose.ui.window.rememberWindowState
+        import com.arkivanov.decompose.DefaultComponentContext
+        import com.arkivanov.decompose.extensions.compose.jetbrains.lifecycle.LifecycleController
+        import com.arkivanov.essenty.lifecycle.LifecycleRegistry
+
+        fun main() {
+            val lifecycle = LifecycleRegistry()
+
+            // Always create the root component outside Compose on the UI thread
+            val root = runOnUiThread {
+                DefaultRootComponent(
+                    componentContext = DefaultComponentContext(lifecycle = lifecycle),
+                )
+            }
+
+            application {
+                val windowState = rememberWindowState()
+
+                LifecycleController(lifecycle, windowState)
+
+                Window(
+                    onCloseRequest = ::exitApplication,
+                    state = windowState,
+                    title = "My Application",
+                ) {
+                    MaterialTheme {
+                        Surface {
+                            RootContent(component = root, modifier = Modifier.fillMaxSize())
+                        }
+                    }
+                }
+            }
+        }
+        ```
+
+        <Note>
+          See [`Utils.kt`](https://github.com/arkivanov/Decompose/blob/master/sample/app-desktop/src/jvmMain/kotlin/com/arkivanov/sample/app/Utils.kt) in the sample for an example `runOnUiThread` implementation.
+        </Note>
+      </Tab>
+      <Tab title="iOS (with ApplicationLifecycle)">
+        Use `ApplicationLifecycle()` when the root component lives in the app scope and there is only one `UIViewController` holding it.
+
+        <Warning>
+          Do not use `ApplicationLifecycle` if multiple view controllers can hold a root component simultaneously — use the manual `LifecycleRegistry` approach instead.
+        </Warning>
+
+        **Step 1.** Declare an `AppDelegate` that holds the root component.
+
+        ```swift
+        class AppDelegate: NSObject, UIApplicationDelegate {
+            let root: RootComponent = DefaultRootComponent(
+                componentContext: DefaultComponentContext(lifecycle: ApplicationLifecycle())
+            )
+        }
+        ```
+
+        **Step 2 (Compose).** In your shared module's `iosMain` source set, create `RootViewController.kt` and a matching `RootView` in Swift.
+
+        <CodeGroup>
+          ```kotlin RootViewController.kt
+          import androidx.compose.ui.window.ComposeUIViewController
+          import platform.UIKit.UIViewController
+
+          fun rootViewController(root: RootComponent): UIViewController =
+              ComposeUIViewController {
+                  // Render the UI here
+              }
+          ```
+
+          ```swift RootView.swift
+          struct RootView: UIViewControllerRepresentable {
+              let root: RootComponent
+
+              func makeUIViewController(context: Context) -> UIViewController {
+                  return RootViewControllerKt.rootViewController(root: root)
+              }
+
+              func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+          }
+          ```
+        </CodeGroup>
+
+        **Step 3.** Wire up `AppDelegate` in your app entry point.
+
+        ```swift
+        @main
+        struct iOSApp: App {
+            @UIApplicationDelegateAdaptor(AppDelegate.self)
+            var appDelegate: AppDelegate
+
+            var body: some Scene {
+                WindowGroup {
+                    RootView(root: appDelegate.root)
+                }
+            }
+        }
+        ```
+      </Tab>
+      <Tab title="iOS (manual lifecycle)">
+        Use this approach for full control over the lifecycle — required if `ApplicationLifecycle` does not fit your setup.
+
+        **Step 1.** Create `RootHolder` to own the lifecycle and the root component.
+
+        ```swift
+        class RootHolder : ObservableObject {
+            let lifecycle: LifecycleRegistry
+            let root: RootComponent
+
+            init() {
+                lifecycle = LifecycleRegistryKt.LifecycleRegistry()
+
+                root = DefaultRootComponent(
+                    componentContext: DefaultComponentContext(lifecycle: lifecycle)
+                )
+
+                LifecycleRegistryExtKt.create(lifecycle)
+            }
+
+            deinit {
+                // Destroy the root component before deallocation
+                LifecycleRegistryExtKt.destroy(lifecycle)
+            }
+        }
+        ```
+
+        **Step 2.** Hold `RootHolder` in `AppDelegate`.
+
+        ```swift
+        class AppDelegate: NSObject, UIApplicationDelegate {
+            let rootHolder: RootHolder = RootHolder()
+        }
+        ```
+
+        **Step 3 (Compose).** Create `RootViewController.kt` in `iosMain` and a matching Swift wrapper.
+
+        <CodeGroup>
+          ```kotlin RootViewController.kt
+          import androidx.compose.ui.window.ComposeUIViewController
+          import platform.UIKit.UIViewController
+
+          fun rootViewController(root: RootComponent): UIViewController =
+              ComposeUIViewController {
+                  // Render the UI here
+              }
+          ```
+
+          ```swift RootView.swift
+          struct RootView: UIViewControllerRepresentable {
+              let root: RootComponent
+
+              func makeUIViewController(context: Context) -> UIViewController {
+                  return RootViewControllerKt.rootViewController(root: root)
+              }
+
+              func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
+          }
+          ```
+        </CodeGroup>
+
+        **Step 4.** Drive the lifecycle from `scenePhase` in your app entry point.
+
+        ```swift
+        @main
+        struct iOSApp: App {
+            @UIApplicationDelegateAdaptor(AppDelegate.self)
+            var appDelegate: AppDelegate
+
+            @Environment(\.scenePhase)
+            var scenePhase: ScenePhase
+
+            var rootHolder: RootHolder { appDelegate.rootHolder }
+
+            var body: some Scene {
+                WindowGroup {
+                    RootView(rootHolder.root)
+                        .onChange(of: scenePhase) { newPhase in
+                            switch newPhase {
+                            case .background: LifecycleRegistryExtKt.stop(rootHolder.lifecycle)
+                            case .inactive:   LifecycleRegistryExtKt.pause(rootHolder.lifecycle)
+                            case .active:     LifecycleRegistryExtKt.resume(rootHolder.lifecycle)
+                            @unknown default: break
+                            }
+                        }
+                }
+            }
+        }
+        ```
+      </Tab>
+      <Tab title="Web (JS/Wasm)">
+        Initialize a `LifecycleRegistry`, pass it to `DefaultComponentContext`, then attach it to the document so the lifecycle tracks tab visibility.
+
+        ```kotlin
+        import com.arkivanov.decompose.DefaultComponentContext
+        import com.arkivanov.decompose.ExperimentalDecomposeApi
+        import com.arkivanov.essenty.lifecycle.LifecycleRegistry
+        import com.arkivanov.essenty.lifecycle.resume
+        import com.arkivanov.essenty.lifecycle.stop
+        import web.dom.DocumentVisibilityState
+        import web.dom.document
+        import web.events.EventType
+
+        @OptIn(ExperimentalDecomposeApi::class)
+        fun main() {
+            val lifecycle = LifecycleRegistry()
+
+            val root = DefaultRootComponent(
+                componentContext = DefaultComponentContext(lifecycle = lifecycle),
+                // Other dependencies here
+            )
+
+            // Attach the lifecycle to the document's visibility state
+            lifecycle.attachToDocument()
+
+            // Render the UI — example uses React
+            createRoot(document.getElementById("app")!!).render(
+                RootContent.create {
+                    component = root
+                }
+            )
+        }
+
+        private fun LifecycleRegistry.attachToDocument() {
+            fun onVisibilityChanged() {
+                if (document.visibilityState == DocumentVisibilityState.visible) {
+                    resume()
+                } else {
+                    stop()
+                }
+            }
+
+            onVisibilityChanged()
+
+            document.addEventListener(
+                type = EventType("visibilitychange"),
+                callback = { onVisibilityChanged() },
+            )
+        }
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## What's next?
+
+<CardGroup cols={2}>
+  <Card title="Component overview" icon="puzzle-piece" href="/component/overview">
+    Learn about lifecycle, StateKeeper, InstanceKeeper, and BackHandler in depth.
+  </Card>
+  <Card title="Child Stack" icon="layer-group" href="/navigation/child-stack">
+    Full reference for stack navigation — push, pop, replace, and deep links.
+  </Card>
+  <Card title="Compose extensions" icon="wand-magic-sparkles" href="/extensions/compose">
+    subscribeAsState, Children, animations, and predictive back gesture support.
+  </Card>
+  <Card title="Samples" icon="flask" href="/samples">
+    Complete working projects for Android, Desktop, iOS, and Web.
+  </Card>
+</CardGroup>

@@ -1,0 +1,213 @@
+---
+title: "Tips and Tricks for Decompose Integration"
+description: "Practical patterns for integrating Decompose with ViewModels, navigation-compose, and other Android Jetpack libraries during migration or mixed use."
+---
+
+This section covers practical patterns that arise when integrating Decompose with other Android libraries, particularly during migrations from the official `navigation-compose` library or when mixing Decompose components with Composable functions that use AndroidX `ViewModel`.
+
+## Composable functions with ViewModels
+
+When migrating from `navigation-compose` to Decompose, you may have `Composable` screens that inject a `ViewModel` via `viewModel()`. Decompose destroys components when they leave the hierarchy (for example, when a screen is popped from the stack). If a screen is still animating its exit while its `ViewModel` has already been cleared, re-composition can create a new `ViewModel` instance — causing a memory leak.
+
+### Use rememberViewModel to prevent leaks
+
+Replace `viewModel()` with a `rememberViewModel()` helper that holds onto the `ViewModel` instance even during exit animations:
+
+```kotlin rememberViewModel.kt
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+
+@Composable
+inline fun <reified T : ViewModel> rememberViewModel(): T {
+    var vm by remember { mutableStateOf<T?>(null) }
+    if (vm == null) {
+        vm = viewModel<T>()
+    }
+    return requireNotNull(vm)
+}
+```
+
+Then use it in your Composable screen:
+
+```kotlin DetailsContent.kt
+@Composable
+fun DetailsContent(viewModel: DetailsViewModel = rememberViewModel()) {
+    // Content here
+}
+```
+
+### ViewModels without SavedStateHandle
+
+Attach a `ViewModelStore` to the component's `InstanceKeeper` so it is cleared exactly when the component is destroyed:
+
+```kotlin ViewModelStoreOwner extension
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import com.arkivanov.essenty.instancekeeper.InstanceKeeper
+import com.arkivanov.essenty.instancekeeper.InstanceKeeperOwner
+import com.arkivanov.essenty.instancekeeper.getOrCreate
+
+internal fun InstanceKeeperOwner.viewModelStoreOwner(): ViewModelStoreOwner =
+    instanceKeeper.getOrCreate(::ViewModelStoreOwnerInstance)
+
+private class ViewModelStoreOwnerInstance : ViewModelStoreOwner, InstanceKeeper.Instance {
+    override val viewModelStore: ViewModelStore = ViewModelStore()
+
+    override fun onDestroy() {
+        viewModelStore.clear()
+    }
+}
+```
+
+In your root component, expose a `ViewModelStoreOwner` for screens that need it and provide it via `LocalViewModelStoreOwner`:
+
+```kotlin RootContent.kt
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import com.arkivanov.decompose.extensions.compose.stack.Children
+
+@Composable
+fun RootContent(component: RootComponent) {
+    Children(stack = component.childStack) { (_, child) ->
+        when (child) {
+            is ListChild -> MainContent(child.component)
+            is MainChild ->
+                CompositionLocalProvider(LocalViewModelStoreOwner provides child.component) {
+                    DetailsContent()
+                }
+        }
+    }
+}
+```
+
+### ViewModels with SavedStateHandle (simplified with JetpackComponentContext)
+
+If you need `SavedStateHandle` in your `ViewModel`, use [JetpackComponentContext](/component/jetpack-component-context). Child `JetpackComponentContext` instances implement `ViewModelStoreOwner` and `SavedStateRegistryOwner`, eliminating the need for manual `BundleSerializer` or `ViewModelStoreComponent` implementations:
+
+```kotlin Using JetpackComponentContext
+@OptIn(ExperimentalDecomposeApi::class)
+class DefaultRootComponent(
+    componentContext: JetpackComponentContext,
+) : RootComponent, JetpackComponentContext by componentContext {
+
+    private val nav = StackNavigation<Config>()
+
+    override val childStack: Value<ChildStack<*, Child>> =
+        childStack(
+            source = nav,
+            serializer = Config.serializer(),
+            initialConfiguration = Config.Main,
+        ) { config, ctx ->
+            when (config) {
+                is Config.Main -> ListChild(DefaultMainComponent(ctx, onShowDetails = { text ->
+                    nav.pushNew(Config.Details(text = text))
+                }))
+                is Config.Details ->
+                    MainChild(
+                        component = ctx.apply {
+                            defaultViewModelCreationExtras[DEFAULT_ARGS_KEY] =
+                                savedState { putString("text", config.text) }
+                        },
+                    )
+            }
+        }
+
+    @Serializable
+    private sealed interface Config {
+        @Serializable data object Main : Config
+        @Serializable data class Details(val text: String) : Config
+    }
+}
+```
+
+---
+
+## Hosting a Decompose component inside navigation-compose
+
+If you are migrating gradually from `navigation-compose` to Decompose, you can host a Decompose component tree inside an individual `navigation-compose` screen using the `rememberRetainedComponent` helper:
+
+```kotlin rememberRetainedComponent.kt
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.createSavedStateHandle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.DefaultComponentContext
+import com.arkivanov.essenty.backhandler.BackDispatcher
+import com.arkivanov.essenty.instancekeeper.InstanceKeeperDispatcher
+import com.arkivanov.essenty.lifecycle.LifecycleRegistry
+import com.arkivanov.essenty.statekeeper.StateKeeperDispatcher
+
+@Composable
+fun <T> rememberRetainedComponent(
+    key: String = "ComposableComponent",
+    factory: (ComponentContext) -> T,
+): T {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val onBackPressedDispatcher =
+        LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+
+    val holder = viewModel {
+        val handle = createSavedStateHandle()
+        val ctx = RetainedComponentContext(handle.get<Bundle>(key)?.getSerializableContainer(key))
+        handle.setSavedStateProvider(key) {
+            Bundle().apply { putSerializableContainer(key, ctx.stateKeeper.save()) }
+        }
+        Holder(factory(ctx), ctx)
+    }
+
+    DisposableEffect(lifecycleOwner.lifecycle) {
+        val observer = LifecycleAdapter(holder.componentContext.lifecycle)
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    if (onBackPressedDispatcher != null) {
+        DisposableEffect(lifecycleOwner, onBackPressedDispatcher) {
+            val callback = holder.componentContext.onBackPressedCallback
+            onBackPressedDispatcher.addCallback(lifecycleOwner, callback)
+            onDispose(callback::remove)
+        }
+    }
+
+    return holder.instance
+}
+```
+
+<Warning>
+The `navigation-compose` library only provides two scopes: the Composable function scope and the ViewModel scope. There is no scope that survives configuration changes but is destroyed with the screen. Always host Decompose components in the ViewModel scope to avoid leaks — and never pass `NavController` or other narrow-scope objects into the component.
+</Warning>
+
+Usage example:
+
+```kotlin App.kt
+@Composable
+fun App() {
+    val nav = rememberNavController()
+
+    NavHost(navController = nav, startDestination = "home") {
+        composable("home") {
+            HomeScreen(onShowDetails = { nav.navigate("details") })
+        }
+
+        composable("details") {
+            val detailsComponent = rememberRetainedComponent(factory = ::DetailsComponent)
+            DetailsScreen(component = detailsComponent, onBack = nav::popBackStack)
+        }
+    }
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="JetpackComponentContext" icon="android" href="/component/jetpack-component-context">
+    Simplified ViewModel and SavedStateHandle integration.
+  </Card>
+  <Card title="Instance retaining" icon="database" href="/component/instance-retaining">
+    Retain objects across configuration changes with InstanceKeeper.
+  </Card>
+</CardGroup>

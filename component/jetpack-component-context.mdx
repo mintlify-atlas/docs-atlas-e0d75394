@@ -1,0 +1,163 @@
+---
+title: "JetpackComponentContext: AndroidX Architecture Integration"
+description: "Use JetpackComponentContext to access AndroidX Lifecycle, ViewModel, and SavedStateHandle APIs directly within Decompose components on Android."
+---
+
+`JetpackComponentContext` is an experimental extension of Decompose's component system that bridges the gap between Decompose and Jetpack architecture components. It lets you use AndroidX `Lifecycle`, `SavedState`, and `ViewModel` APIs inside your Decompose components while retaining all the benefits of the standard `ComponentContext`.
+
+<Warning>
+This API is experimental and available since version `3.4.0-alpha03`. The API is subject to change.
+</Warning>
+
+## Setup
+
+Add the `jetpack-component-context` module to your Android module's dependencies:
+
+<CodeGroup>
+```kotlin Kotlin DSL
+implementation("com.arkivanov.decompose:jetpack-component-context:<version>")
+```
+```groovy Groovy DSL
+implementation "com.arkivanov.decompose:jetpack-component-context:<version>"
+```
+</CodeGroup>
+
+## What JetpackComponentContext provides
+
+`JetpackComponentContext` extends `GenericComponentContext` and implements these Jetpack interfaces:
+
+| Interface | What it gives you |
+|-----------|-------------------|
+| `androidx.lifecycle.LifecycleOwner` | Jetpack `Lifecycle` (also extends Essenty Lifecycle) |
+| `androidx.savedstate.SavedStateRegistryOwner` | Jetpack `SavedState` for state preservation on Android |
+| `androidx.lifecycle.ViewModelStoreOwner` | Scoped `ViewModel` instances per component |
+
+<Note>
+`OnBackPressedDispatcherOwner` and `NavigationEventDispatcherOwner` are not yet supported. Support is planned for Decompose 4.0.
+</Note>
+
+<Note>
+Persistent state saving via `SavedStateRegistryOwner` is only supported on Android. On other platforms, use `StateKeeperOwner` which supports serialization on all targets.
+</Note>
+
+## Convert to JetpackComponentContext
+
+Call `asJetpackComponentContext()` on any `ComponentContext` — typically when creating the root component in your `Activity`:
+
+```kotlin MainActivity.kt
+import android.os.Bundle
+import androidx.activity.compose.setContent
+import androidx.appcompat.app.AppCompatActivity
+import com.arkivanov.decompose.defaultComponentContext
+import com.arkivanov.decompose.jetpackcomponentcontext.asJetpackComponentContext
+
+class MainActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val root =
+            DefaultRootComponent(
+                componentContext = defaultComponentContext().asJetpackComponentContext(),
+            )
+
+        setContent {
+            RootContent(root)
+        }
+    }
+}
+```
+
+## Use JetpackComponentContext in a component
+
+Accept `JetpackComponentContext` in your component constructor and delegate to it. You gain access to `lifecycleScope`, `viewModel {}`, `createSavedStateHandle()`, and other AndroidX extension APIs:
+
+```kotlin DefaultRootComponent.kt
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.createSavedStateHandle
+import androidx.lifecycle.lifecycleScope
+import com.arkivanov.decompose.jetpackcomponentcontext.JetpackComponentContext
+import com.arkivanov.decompose.jetpackcomponentcontext.viewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+class DefaultRootComponent(
+    componentContext: JetpackComponentContext,
+) : RootComponent, JetpackComponentContext by componentContext {
+
+    // Create a ViewModel scoped to this component
+    private val viewModel = viewModel { RootViewModel(createSavedStateHandle()) }
+
+    init {
+        lifecycleScope.launch {
+            while (true) {
+                viewModel.state.update { it + 1 }
+                delay(1000)
+            }
+        }
+    }
+}
+
+private class RootViewModel(
+    savedStateHandle: SavedStateHandle,
+) : ViewModel() {
+    val state: MutableStateFlow<Int> = savedStateHandle.getMutableStateFlow(key = "state", initialValue = 0)
+}
+```
+
+## Providing LocalLifecycleOwner in Compose
+
+By default, `LocalLifecycleOwner` in Compose provides the hosting Activity's lifecycle, which does not react to screen changes. With `JetpackComponentContext`, child contexts implement `LifecycleOwner`, so you can pass them directly:
+
+```kotlin RootContent.kt
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.arkivanov.decompose.extensions.compose.stack.Children
+
+@Composable
+fun RootContent(component: RootComponent) {
+    Children(stack = component.stack) {
+        CompositionLocalProvider(LocalLifecycleOwner provides it.instance.lifecycleOwner) {
+            when (val child = it.instance) {
+                is RootComponent.Child.HomeChild -> HomeContent(child.component)
+            }
+        }
+    }
+}
+```
+
+And expose the lifecycle owner from each child:
+
+```kotlin RootComponent.kt
+interface RootComponent {
+    val stack: Value<ChildStack<*, Child>>
+
+    sealed class Child(val lifecycleOwner: LifecycleOwner) {
+        class HomeChild(val component: HomeComponent, lifecycleOwner: LifecycleOwner) : Child(lifecycleOwner)
+    }
+}
+```
+
+In the child factory, pass `ctx` (which is a `JetpackComponentContext` implementing `LifecycleOwner`) as the `lifecycleOwner`:
+
+```kotlin
+childStack(...) { cfg, ctx ->
+    RootComponent.Child.HomeChild(
+        component = DefaultHomeComponent(ctx),
+        lifecycleOwner = ctx,
+    )
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Custom ComponentContext" icon="wrench" href="/component/custom-component-context">
+    Add your own shared properties to ComponentContext.
+  </Card>
+  <Card title="Instance retaining" icon="database" href="/component/instance-retaining">
+    Retain objects across configuration changes with InstanceKeeper.
+  </Card>
+</CardGroup>

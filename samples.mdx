@@ -1,0 +1,119 @@
+---
+title: "Decompose Sample Apps and Projects"
+description: "Explore Decompose sample applications covering Android, iOS, Desktop, and Web targets with Compose, SwiftUI, and React UIs, plus community projects."
+---
+
+Decompose ships with a comprehensive set of sample applications that demonstrate real-world usage across every supported platform and UI framework. All samples are available in the [main repository](https://github.com/arkivanov/Decompose).
+
+## Multi-Feature Sample App
+
+The main sample is a full-featured multiplatform application that demonstrates the breadth of Decompose's capabilities across Android, iOS, Desktop, and Web.
+
+### Features demonstrated
+
+- Nested reusable components
+- Bottom navigation
+- Nested navigation
+- All navigation models: Child Stack, Child Slot, Child Pages, Child Items, Generic Navigation
+- State preservation using `StateKeeper`
+- Retaining instances using `InstanceKeeper`
+- Pluggable UI: Android Views, Compose, SwiftUI, Kotlin/React
+- [Play Feature Delivery](https://developer.android.com/guide/playcore/feature-delivery) for Android
+- Tests including Compose UI tests
+
+### Component hierarchy
+
+The shared module contains the following component tree:
+
+- **Root** — application root
+  - **Tabs** — bottom navigation bar with selected tab
+    - **Menu** — buttons leading to fullscreen components
+    - **Counters** — stack of `CounterComponent` instances, each counting independently
+    - **Cards** — draggable card stack controlled by gestures
+    - **Multi-Pane** — list/details in single-pane or side-by-side layout
+  - **Dynamic Features** — Play Feature Delivery on Android, direct dep on other platforms
+  - **Custom Navigation** — Generic Navigation model example
+  - **Pages** — Child Pages navigation example
+  - **Shared Transitions** — Compose shared element transitions with Decompose
+
+### Platform apps
+
+<CardGroup cols={2}>
+  <Card title="Android sample" icon="android" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-android">
+    Android application using Compose and Android Views.
+  </Card>
+  <Card title="Desktop sample" icon="desktop" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-desktop">
+    JVM Desktop app using Multiplatform Compose.
+  </Card>
+  <Card title="iOS SwiftUI sample" icon="apple" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-ios">
+    iOS app using SwiftUI with Decompose shared components.
+  </Card>
+  <Card title="iOS Compose sample" icon="apple" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-ios-compose">
+    iOS app using Multiplatform Compose instead of SwiftUI.
+  </Card>
+  <Card title="Web (JS React)" icon="globe" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-js">
+    Web app using Kotlin/React for UI.
+  </Card>
+  <Card title="Web (JS Compose)" icon="globe" href="https://github.com/arkivanov/Decompose/tree/master/sample/app-js-compose">
+    Web app using Multiplatform Compose in the browser.
+  </Card>
+</CardGroup>
+
+### Integration tests
+
+The sample includes multiplatform integration tests that run without instrumentation:
+
+- `RootComponentIntegrationTest` — navigation tests for the root component
+- `TabsComponentIntegrationTest` — navigation tests for the tabs component
+- `CountersComponentIntegrationTest` — navigation tests for the counters stack
+- `CounterComponentTest` — unit tests covering instance retaining and state preservation
+- `CounterContentTest` — Compose UI tests for the counter screen
+
+---
+
+## Sample Todo App
+
+A simple todo list application with list and detail screens, sharing UI between Android and Desktop via Compose Multiplatform, with SwiftUI on iOS.
+
+Libraries used:
+- [MVIKotlin](https://github.com/arkivanov/MVIKotlin) — presentation and business logic
+- [Reaktive](https://github.com/badoo/Reaktive) — background processing and data transformation
+- [SQLDelight](https://github.com/cashapp/sqldelight) — data storage
+
+[View on GitHub](https://github.com/IlyaGulya/TodoAppDecomposeMviKotlin)
+
+---
+
+## Decompose-Dagger Sample
+
+A sample Android project demonstrating Decompose used together with the Dagger DI framework for dependency injection at the component level.
+
+[View on GitHub](https://github.com/arkivanov/decompose-dagger-sample)
+
+---
+
+## Sample Greetings App
+
+A simple desktop greeting application demonstrating Decompose on JVM Desktop with Compose.
+
+[View on GitHub](https://github.com/theapache64/decompose-desktop-example)
+
+---
+
+## Related articles
+
+- [Decompose — experiments with Kotlin Multiplatform lifecycle-aware components and navigation](https://proandroiddev.com/decompose-experiments-with-kotlin-multiplatform-lifecycle-aware-components-and-navigation-a04ef3c7f6a3)
+- [Fully cross-platform Kotlin applications (almost)](https://proandroiddev.com/fully-cross-platform-kotlin-applications-almost-29c7054f8f28)
+- [A comprehensive thirty-line navigation for Jetpack/Multiplatform Compose](https://medium.com/p/5b723c4f256e)
+- [Component-based Approach: Fighting Complexity in Android Applications](https://medium.com/@a.artikov/component-based-approach-fighting-complexity-in-android-applications-2eaf5e8c5fad)
+- [Component-based Approach: Implementing Screens with the Decompose Library](https://medium.com/@a.artikov/component-based-approach-implementing-screens-with-the-decompose-library-19c41d8ed087)
+
+---
+
+## Project template
+
+The [decompose-multiplatform-template](https://github.com/arkivanov/decompose-multiplatform-template) repository can be used to kick-start a new Kotlin Multiplatform project with Decompose already configured.
+
+## Community projects
+
+See the [voluntary list of projects using Decompose](https://github.com/arkivanov/Decompose/discussions/366) maintained in GitHub Discussions. Feel free to add your own project.

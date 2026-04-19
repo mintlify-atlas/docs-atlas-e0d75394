@@ -1,0 +1,94 @@
+---
+title: "Custom ComponentContext for Shared Dependencies"
+description: "Extend Decompose's ComponentContext with your own properties and APIs to share dependencies like loggers or analytics across all components in your app."
+---
+
+Decompose allows you to create a custom `ComponentContext` that adds extra properties beyond what the default context provides. This is useful when most components in your application need access to the same dependencies — such as a logger, analytics tracker, or coroutine dispatcher — without passing them through every constructor individually.
+
+## Create a custom ComponentContext
+
+Define an interface that extends `GenericComponentContext<YourContext>`, then implement it by delegating the standard Essenty interfaces to an existing `ComponentContext`.
+
+```kotlin Custom AppComponentContext
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.ComponentContextFactory
+import com.arkivanov.decompose.GenericComponentContext
+import com.arkivanov.essenty.backhandler.BackHandlerOwner
+import com.arkivanov.essenty.instancekeeper.InstanceKeeperOwner
+import com.arkivanov.essenty.lifecycle.LifecycleOwner
+import com.arkivanov.essenty.statekeeper.StateKeeperOwner
+
+interface AppComponentContext : GenericComponentContext<AppComponentContext> {
+    val logger: Logger // Additional shared property
+}
+
+class DefaultAppComponentContext(
+    componentContext: ComponentContext,
+    override val logger: Logger,
+) : AppComponentContext,
+    LifecycleOwner by componentContext,
+    StateKeeperOwner by componentContext,
+    InstanceKeeperOwner by componentContext,
+    BackHandlerOwner by componentContext {
+
+    override val componentContextFactory: ComponentContextFactory<AppComponentContext> =
+        ComponentContextFactory { lifecycle, stateKeeper, instanceKeeper, backHandler ->
+            val ctx = componentContext.componentContextFactory(lifecycle, stateKeeper, instanceKeeper, backHandler)
+            DefaultAppComponentContext(ctx, logger)
+        }
+}
+```
+
+The `componentContextFactory` property is critical — it tells Decompose how to create new instances of your custom context type when it constructs child component contexts during navigation.
+
+## Use the custom context in components
+
+Components can accept `AppComponentContext` instead of `ComponentContext` and access the extra properties directly:
+
+```kotlin Component using AppComponentContext
+class DefaultListComponent(
+    componentContext: AppComponentContext,
+) : ListComponent, AppComponentContext by componentContext {
+
+    init {
+        logger.log("ListComponent created")
+    }
+}
+```
+
+## Create the root context
+
+When initializing the root component, wrap the platform `ComponentContext` in your custom implementation:
+
+```kotlin Android root setup
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val appContext = DefaultAppComponentContext(
+            componentContext = defaultComponentContext(),
+            logger = AppLogger(),
+        )
+
+        val root = DefaultRootComponent(componentContext = appContext)
+        // ...
+    }
+}
+```
+
+## How child contexts inherit
+
+When Decompose creates child component contexts (during navigation or via `childContext()`), it calls `componentContextFactory` with the new lifecycle, stateKeeper, instanceKeeper, and backHandler for that child. Your factory implementation wraps them in a new `DefaultAppComponentContext`, automatically propagating the shared `logger` to every child component in the tree.
+
+<Note>
+You only need to construct `DefaultAppComponentContext` once at the root. All child components receive their own instance with the same shared dependencies automatically.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Component overview" icon="puzzle-piece" href="/component/overview">
+    Learn how ComponentContext works and what interfaces it provides.
+  </Card>
+  <Card title="JetpackComponentContext" icon="android" href="/component/jetpack-component-context">
+    Integrate with AndroidX Lifecycle, ViewModel, and SavedState APIs.
+  </Card>
+</CardGroup>

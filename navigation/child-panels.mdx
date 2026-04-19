@@ -1,0 +1,287 @@
+---
+title: "Child Panels: Adaptive Multi-Pane Navigation in Decompose"
+description: "Build adaptive multi-pane layouts in Decompose with Child Panels. Covers SINGLE/DUAL/TRIPLE modes, PanelsNavigation, and activate and dismiss operations."
+---
+
+Child Panels is a Decompose navigation model for adaptive multi-pane layouts. It manages up to three child components—**Main** (required), **Details** (optional), and **Extra** (optional)—and controls their lifecycle states based on the current display mode. This is the Decompose equivalent of the Compose [List-Detail Layout](https://developer.android.com/develop/ui/compose/layouts/adaptive/list-detail).
+
+<Warning>
+  Child Panels is experimental since version `3.2.0-beta01`. The API is subject to change.
+</Warning>
+
+## Core concepts
+
+Child Panels is built from four types:
+
+- **`Panels<MC, DC, EC>`** — the navigation state: `main`, `details`, `extra` configurations, and a `mode`.
+- **`ChildPanels<MC, MT, DC, DT, EC, ET>`** — the observable output with the same `main`, `details`, `extra` child wrappers and `mode`.
+- **`ChildPanelsMode`** — an enum that determines how many panels can be `RESUMED` simultaneously.
+- **`PanelsNavigation<MC, DC, EC>`** — the mutable handle you call navigation operations on.
+
+### ChildPanelsMode
+
+| Mode | Behaviour |
+|---|---|
+| `SINGLE` | Only one panel is `RESUMED` at a time. Priority: Extra > Details > Main. The others are `CREATED`. |
+| `DUAL` | Main is always `RESUMED`. If Extra exists it is `RESUMED` and Details is `CREATED`; otherwise Details (if it exists) is `RESUMED`. |
+| `TRIPLE` | All existing panels are always `RESUMED`. |
+
+Switch mode at runtime with `navigation.setMode(ChildPanelsMode.DUAL)` to respond to window size class changes (e.g., compact → medium → expanded).
+
+## Setting up Child Panels
+
+<Steps>
+  <Step title="Create a PanelsNavigation instance">
+    The three type parameters correspond to the Main, Details, and Extra configuration types. Use `Nothing` for panels you do not use.
+
+    ```kotlin
+    private val nav = PanelsNavigation<Unit, DetailsConfig, Nothing>()
+    ```
+  </Step>
+  <Step title="Call childPanels() on ComponentContext">
+    ```kotlin
+    val panels: Value<ChildPanels<*, MainComponent, *, DetailsComponent, Nothing, Nothing>> =
+        childPanels(
+            source = nav,
+            serializers = Unit.serializer() to DetailsConfig.serializer(),
+            initialPanels = { Panels(main = Unit) },
+            handleBackButton = true,
+            mainFactory = { _, ctx ->
+                DefaultMainComponent(
+                    componentContext = ctx,
+                    onItemSelected = { id ->
+                        nav.activateDetails(details = DetailsConfig(itemId = id))
+                    },
+                )
+            },
+            detailsFactory = { cfg, ctx ->
+                DefaultDetailsComponent(
+                    componentContext = ctx,
+                    itemId = cfg.itemId,
+                    onFinished = nav::dismissDetails,
+                )
+            },
+        )
+    ```
+  </Step>
+  <Step title="Update mode on layout changes">
+    Observe the window size class (or equivalent) and call `setMode` to keep the layout adaptive.
+
+    ```kotlin
+    fun onWindowSizeClassChanged(isExpanded: Boolean) {
+        nav.setMode(
+            if (isExpanded) ChildPanelsMode.DUAL else ChildPanelsMode.SINGLE
+        )
+    }
+    ```
+  </Step>
+</Steps>
+
+### childPanels() parameters
+
+<ParamField path="source" type="NavigationSource<PanelsNavEvent<MC, DC, EC>>" required>
+  The `PanelsNavigation` instance that drives this model.
+</ParamField>
+
+<ParamField path="serializers" type="Pair<KSerializer<MC>, KSerializer<DC>>?">
+  Serializer pair for Main and Details configurations. Pass `null` to disable state persistence. The Extra serializer is provided separately via `extraSerializer`.
+</ParamField>
+
+<ParamField path="initialPanels" type="() -> Panels<MC, DC, EC>" required>
+  Factory that returns the initial `Panels` state.
+</ParamField>
+
+<ParamField path="handleBackButton" type="Boolean" default="false">
+  When `true`, presses the back button by calling `pop()` automatically — dismissing Extra first, then Details.
+</ParamField>
+
+<ParamField path="mainFactory" type="(MC, ComponentContext) -> MT" required>
+  Factory for the Main component.
+</ParamField>
+
+<ParamField path="detailsFactory" type="(DC, ComponentContext) -> DT">
+  Factory for the Details component.
+</ParamField>
+
+<ParamField path="extraFactory" type="(EC, ComponentContext) -> ET">
+  Factory for the Extra component.
+</ParamField>
+
+## Navigation operations
+
+### navigate(main, details, extra)
+
+Sets all three panel configurations in one call. Pass `null` for any optional panel to dismiss it.
+
+```kotlin
+// Replace everything
+navigation.navigate(main = Main2, details = Details2, extra = Extra2)
+
+// Keep Main, dismiss Details and Extra
+navigation.navigate(main = Main1, details = null, extra = null)
+```
+
+### navigate(details, extra)
+
+Updates Details and Extra while keeping the current Main configuration unchanged.
+
+```kotlin
+navigation.navigate(details = DetailsConfig(itemId = 42L), extra = null)
+```
+
+### navigate(extra)
+
+Updates only the Extra panel.
+
+```kotlin
+navigation.navigate(extra = ExtraConfig(type = "preview"))
+```
+
+### activateDetails(details)
+
+Activates a Details component, replacing any existing Details component.
+
+```kotlin
+navigation.activateDetails(details = DetailsConfig(itemId = 42L))
+```
+
+### dismissDetails
+
+Destroys the currently active Details component. Safe to call when Details is already absent.
+
+```kotlin
+navigation.dismissDetails()
+```
+
+### activateExtra(extra) / dismissExtra
+
+Same pattern for the Extra panel.
+
+```kotlin
+navigation.activateExtra(extra = ExtraConfig(type = "preview"))
+navigation.dismissExtra()
+```
+
+### pop
+
+Dismisses Extra (if it exists) or Details (if it exists). Has no effect if both are absent.
+
+```kotlin
+// {Main, Details, Extra} --pop()--> {Main, Details, null}
+// {Main, Details, null}  --pop()--> {Main, null, null}
+navigation.pop()
+```
+
+### setMode(mode)
+
+Changes the `ChildPanelsMode` and updates component lifecycles immediately.
+
+```kotlin
+navigation.setMode(ChildPanelsMode.DUAL)
+```
+
+## Full example
+
+<CodeGroup>
+
+```kotlin Components.kt
+import com.arkivanov.decompose.ComponentContext
+
+interface MainComponent
+
+class DefaultMainComponent(
+    componentContext: ComponentContext,
+    onItemSelected: (id: Long) -> Unit,
+) : MainComponent, ComponentContext by componentContext
+
+interface DetailsComponent
+
+class DefaultDetailsComponent(
+    componentContext: ComponentContext,
+    val itemId: Long,
+    onFinished: () -> Unit,
+) : DetailsComponent, ComponentContext by componentContext
+```
+
+```kotlin DefaultPanelsComponent.kt
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.router.panels.ChildPanels
+import com.arkivanov.decompose.router.panels.ChildPanelsMode
+import com.arkivanov.decompose.router.panels.Panels
+import com.arkivanov.decompose.router.panels.PanelsNavigation
+import com.arkivanov.decompose.router.panels.activateDetails
+import com.arkivanov.decompose.router.panels.childPanels
+import com.arkivanov.decompose.router.panels.dismissDetails
+import com.arkivanov.decompose.router.panels.setMode
+import com.arkivanov.decompose.value.Value
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.serializer
+
+interface PanelsComponent {
+    val panels: Value<ChildPanels<*, MainComponent, *, DetailsComponent, Nothing, Nothing>>
+
+    fun setMode(mode: ChildPanelsMode)
+}
+
+class DefaultPanelsComponent(
+    componentContext: ComponentContext,
+) : PanelsComponent, ComponentContext by componentContext {
+
+    private val nav = PanelsNavigation<Unit, DetailsConfig, Nothing>()
+
+    override val panels: Value<ChildPanels<*, MainComponent, *, DetailsComponent, Nothing, Nothing>> =
+        childPanels(
+            source = nav,
+            serializers = Unit.serializer() to DetailsConfig.serializer(),
+            initialPanels = { Panels(main = Unit) },
+            handleBackButton = true,
+            mainFactory = { _, ctx ->
+                DefaultMainComponent(
+                    componentContext = ctx,
+                    onItemSelected = { id ->
+                        nav.activateDetails(details = DetailsConfig(itemId = id))
+                    },
+                )
+            },
+            detailsFactory = { cfg, ctx ->
+                DefaultDetailsComponent(
+                    componentContext = ctx,
+                    itemId = cfg.itemId,
+                    onFinished = nav::dismissDetails,
+                )
+            },
+        )
+
+    override fun setMode(mode: ChildPanelsMode) {
+        nav.setMode(mode)
+    }
+
+    @Serializable
+    private data class DetailsConfig(val itemId: Long)
+}
+```
+
+</CodeGroup>
+
+## Mode transitions and lifecycle
+
+When you change `ChildPanelsMode`, Decompose immediately recalculates which panels should be `RESUMED`, `CREATED`, or `DESTROYED`. No components are re-instantiated during a mode change — only the lifecycle state changes.
+
+| Scenario | Mode | Main | Details | Extra |
+|---|---|---|---|---|
+| Phone, only main | SINGLE | RESUMED | — | — |
+| Phone, showing details | SINGLE | CREATED | RESUMED | — |
+| Tablet, side by side | DUAL | RESUMED | RESUMED | — |
+| Large tablet, all three | TRIPLE | RESUMED | RESUMED | RESUMED |
+
+## Multiple Child Panels in one component
+
+Each Child Panels instance in the same parent must have a unique `key`:
+
+```kotlin
+private val primaryPanels = childPanels<Unit, DetailsCfg, Nothing>(
+    source = primaryNav,
+    key = "PrimaryPanels",
+    // ...
+)
+```

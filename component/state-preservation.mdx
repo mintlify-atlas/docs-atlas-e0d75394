@@ -1,0 +1,160 @@
+---
+title: "State Preservation in Decompose (StateKeeper API)"
+description: "Save and restore component state across Android configuration changes and process death using the StateKeeper API, saveable delegate, and kotlinx-serialization on all platforms."
+---
+
+Decompose provides a multiplatform alternative to AndroidX `SavedStateHandle` through the `StateKeeper` API from the [Essenty](https://github.com/arkivanov/Essenty) library. State preservation is necessary whenever the system can destroy and recreate your component — most commonly on Android due to configuration changes or process death, but also on iOS after a memory warning, or when a user returns to the app. The `ComponentContext` interface extends `StateKeeperOwner`, giving every component access to a `stateKeeper` property. The `decompose` module includes Essenty's `state-keeper` module as an `api` dependency, so no additional Gradle dependency is required.
+
+All state is serialized using [kotlinx-serialization](https://github.com/Kotlin/kotlinx.serialization), which works across all Kotlin Multiplatform targets.
+
+## How StateKeeper works
+
+There are two operations:
+
+- **`stateKeeper.consume(key, strategy)`** — restores previously saved state, or returns `null` if none exists. Call this to initialize your state.
+- **`stateKeeper.register(key, strategy) { ... }`** — registers a supplier lambda that is called when it is time to save state. The lambda should return your current state.
+
+State classes must be annotated with `@Serializable` from `kotlinx-serialization`.
+
+## Basic state preservation
+
+```kotlin title="Saving state in a component"
+import com.arkivanov.decompose.ComponentContext
+import kotlinx.serialization.Serializable
+
+class SomeComponent(componentContext: ComponentContext) : ComponentContext by componentContext {
+
+    // Either restore the previously saved state or create a new (initial) one
+    private var state: State = stateKeeper.consume(key = "SAVED_STATE", strategy = State.serializer()) ?: State()
+
+    init {
+        stateKeeper.register(key = "SAVED_STATE", strategy = State.serializer()) {
+            state // Called when it's time to save the state
+        }
+    }
+
+    @Serializable // Comes from kotlinx-serialization
+    private class State(val someValue: Int = 0)
+}
+```
+
+<Note>
+  Use a stable, unique string as the `key`. If two registrations in the same component context use the same key, only the first will be saved.
+</Note>
+
+## Saving state of a retained instance
+
+When combining `InstanceKeeper` with `StateKeeper`, pass the restored state into the retained instance during construction, and register the state supplier from the component's `init`:
+
+```kotlin title="Saving state of a retained instance"
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.instancekeeper.InstanceKeeper
+import com.arkivanov.essenty.instancekeeper.getOrCreate
+import kotlinx.serialization.Serializable
+
+class SomeComponent(componentContext: ComponentContext) : ComponentContext by componentContext {
+    private val statefulEntity =
+        instanceKeeper.getOrCreate {
+            SomeStatefulEntity(
+                savedState = stateKeeper.consume(key = "SAVED_STATE", strategy = SomeStatefulEntity.State.serializer())
+            )
+        }
+
+    init {
+        stateKeeper.register(
+            key = "SAVED_STATE",
+            strategy = SomeStatefulEntity.State.serializer(),
+            supplier = statefulEntity::state
+        )
+    }
+}
+
+class SomeStatefulEntity(savedState: State?) : InstanceKeeper.Instance {
+    var state: State = savedState ?: State()
+        private set
+
+    @Serializable
+    data class State(val someValue: Int = 0)
+}
+```
+
+## Simplified state preservation
+
+The `saveable` delegate provides a more concise API that combines registration and consumption into a single property declaration.
+
+<Warning>
+  The `saveable` API is experimental since version `3.2.0-alpha02`.
+</Warning>
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.statekeeper.saveable
+import kotlinx.serialization.Serializable
+
+class SomeComponent(componentContext: ComponentContext) : ComponentContext by componentContext {
+    private var state: State by saveable(serializer = State.serializer(), init = ::State)
+
+    @Serializable // Comes from kotlinx-serialization
+    private data class State(val someValue: Int = 0)
+}
+```
+
+## Simplified state preservation of a retained instance
+
+You can combine the `saveable` delegate with `retainedInstance {}` to both retain an instance across configuration changes and save its state across process death in a single expression.
+
+<Warning>
+  The `retainedInstance` API is experimental since version `3.2.0-alpha02`, stable since `3.2.0`.
+</Warning>
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.instancekeeper.InstanceKeeper
+import com.arkivanov.essenty.instancekeeper.retainedInstance
+import com.arkivanov.essenty.statekeeper.saveable
+import kotlinx.serialization.Serializable
+
+class SomeComponent(componentContext: ComponentContext) : ComponentContext by componentContext {
+    private val statefulEntity by saveable(
+        serializer = SomeStatefulEntity.State.serializer(),
+        state = { it.state }
+    ) { savedState ->
+        retainedInstance {
+            SomeStatefulEntity(savedState = savedState)
+        }
+    }
+}
+
+class SomeStatefulEntity(savedState: State?) : InstanceKeeper.Instance {
+    var state: State = savedState ?: State()
+        private set
+
+    @Serializable
+    data class State(val someValue: Int = 0)
+}
+```
+
+<Tip>
+  The `state = { it.state }` lambda tells `saveable` how to extract the serializable state from your retained instance. This is what gets saved to the `StateKeeper`.
+</Tip>
+
+## Non-Android targets
+
+On non-Android platforms, Decompose serializes state as a JSON string using `kotlinx-serialization` and hands it off to the platform's native persistence mechanism:
+
+| Platform | Persistence mechanism |
+|---|---|
+| iOS | `NSCoder` |
+| JVM/Desktop | File system |
+| Web/JS | `localStorage` |
+
+This means the same `@Serializable` state class and the same `stateKeeper` API work identically across all targets without any platform-specific code in your component.
+
+<CardGroup cols={2}>
+  <Card title="Instance retaining" icon="layer-group" href="/component/instance-retaining">
+    Retain objects in memory across configuration changes using InstanceKeeper.
+  </Card>
+  <Card title="Component overview" icon="puzzle-piece" href="/component/overview">
+    Review what ComponentContext provides and how to create the root context.
+  </Card>
+</CardGroup>

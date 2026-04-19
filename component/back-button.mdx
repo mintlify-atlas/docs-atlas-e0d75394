@@ -1,0 +1,194 @@
+---
+title: "Back Button Handling in Decompose Components"
+description: "Handle back navigation in Decompose using navigation models, manual BackCallback registration, callback priority, Predictive Back Gesture support, and Compose or Desktop integration."
+---
+
+Decompose gives every component a `BackHandler` through `ComponentContext`, sourced from the [Essenty](https://github.com/arkivanov/Essenty) library. This allows any component in the tree to intercept back-button events — hardware buttons on Android, the system gesture on modern Android, and simulated back events on Desktop — without depending on the hosting Activity or platform-specific APIs. The `decompose` module includes Essenty's `back-handler` module as an `api` dependency, so no extra Gradle configuration is needed.
+
+## Navigation with back button
+
+The simplest approach is to let a navigation model handle back automatically. Most navigation models — including `Child Stack` and `Child Slot` — accept a `handleBackButton = true` argument that registers a back callback on your behalf. When back is pressed and the navigation model has something to pop or dismiss, it acts automatically.
+
+```kotlin
+// Child Stack example: pass handleBackButton = true
+val navigation = StackNavigation<Config>()
+val stack = childStack(
+    source = navigation,
+    serializer = Config.serializer(),
+    initialConfiguration = Config.Home,
+    handleBackButton = true, // Automatically pops the stack on back press
+    childFactory = ::createChild,
+)
+```
+
+See the [Navigation overview](/navigation/overview) for full details on each navigation model.
+
+## Manual back button handling
+
+When you need full control — for example, to show a confirmation dialog before exiting — register a `BackCallback` directly with `backHandler`.
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.backhandler.BackCallback
+
+class SomeComponent(
+    componentContext: ComponentContext
+) : ComponentContext by componentContext {
+
+    private val backCallback = BackCallback { /* Handle the back button */ }
+
+    init {
+        backHandler.register(backCallback)
+    }
+
+    private fun updateBackCallback() {
+        // Set isEnabled to true if you want to override the back button
+        backCallback.isEnabled = true // or false
+    }
+}
+```
+
+<Tip>
+  Set `backCallback.isEnabled = false` when the callback should not intercept back presses. The `BackHandler` only calls enabled callbacks, so disabling is more efficient than unregistering and re-registering.
+</Tip>
+
+## Callback priority
+
+By default, registered callbacks are checked in reverse registration order — the last registered enabled callback is called first. Navigation models like `Child Stack` also register their own back callbacks internally.
+
+To control the call order explicitly, pass a `priority` integer when constructing a `BackCallback`:
+
+```kotlin
+// This callback is always called first — before navigation model callbacks
+private val backCallback = BackCallback(priority = Int.MAX_VALUE) { ... }
+
+// This callback is always called last — after navigation model callbacks
+private val backCallback = BackCallback(priority = Int.MIN_VALUE) { ... }
+```
+
+<Info>
+  If you want your callback to intercept back before the navigation model pops the stack (for example, to show a "discard changes?" dialog before popping), use `Int.MAX_VALUE`. If you want it to act only when nothing else handled the event, use `Int.MIN_VALUE`.
+</Info>
+
+## Predictive Back Gesture
+
+Decompose experimentally supports the [Android Predictive Back Gesture](https://developer.android.com/guide/navigation/custom-back/predictive-back-gesture), and the support is not limited to Android. The UI portion of this feature is handled by the Compose extensions module. See the [Compose extensions](/extensions/compose#predictive-back-gesture) documentation for integration details.
+
+## Back button handling in Compose
+
+By default, Decompose does not propagate `LocalOnBackPressedDispatcherOwner` from Jetpack's `activity-compose` library. This means the Jetpack `BackHandler {}` Composable always registers into the root `OnBackPressedDispatcher`, causing it to intercept back regardless of where in the component tree you are.
+
+<Warning>
+  If you use `BackHandler {}` from Jetpack `activity-compose`, ensure its `enabled` argument is set correctly so it only intercepts when intended. An always-enabled handler at a leaf Composable will swallow all back events.
+</Warning>
+
+The recommended approach is to expose Essenty's `BackHandler` from your component interface and register callbacks through a custom Composable:
+
+<CodeGroup>
+
+```kotlin The component interface
+import com.arkivanov.essenty.backhandler.BackHandlerOwner
+
+interface SomeComponent : BackHandlerOwner {
+    // Omitted code
+}
+```
+
+```kotlin Implementing the component
+class DefaultSomeComponent(
+    componentContext: ComponentContext,
+) : ComponentContext by componentContext {
+    // No need to implement BackHandlerOwner — ComponentContext already does
+}
+```
+
+```kotlin Custom BackHandler Composable
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import com.arkivanov.essenty.backhandler.BackCallback
+import com.arkivanov.essenty.backhandler.BackHandler
+
+@Composable
+fun BackHandler(backHandler: BackHandler, isEnabled: Boolean = true, onBack: () -> Unit) {
+    val currentOnBack by rememberUpdatedState(onBack)
+
+    val callback =
+        remember {
+            BackCallback(isEnabled = isEnabled) {
+                currentOnBack()
+            }
+        }
+
+    SideEffect { callback.isEnabled = isEnabled }
+
+    DisposableEffect(backHandler) {
+        backHandler.register(callback)
+        onDispose { backHandler.unregister(callback) }
+    }
+}
+```
+
+```kotlin Using the custom BackHandler
+import androidx.compose.runtime.Composable
+
+@Composable
+fun SomeContent(component: SomeComponent) {
+    BackHandler(backHandler = component.backHandler) {
+        // Handle the back button here
+    }
+}
+```
+
+</CodeGroup>
+
+## Back button handling in Compose for Desktop
+
+Desktop applications have no hardware back button. To simulate back navigation — for example when the user presses the Escape key — create a `BackDispatcher`, pass it to the root `DefaultComponentContext`, and call `backDispatcher.back()` from the window's `onKeyEvent` handler.
+
+```kotlin
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.application
+import com.arkivanov.decompose.DefaultComponentContext
+import com.arkivanov.essenty.backhandler.BackDispatcher
+
+fun main() {
+    val backDispatcher = BackDispatcher() // Create BackDispatcher
+
+    val root =
+        runOnUiThread {
+            DefaultRootComponent(
+                componentContext = DefaultComponentContext(
+                    lifecycle = ...,
+                    backHandler = backDispatcher, // Pass BackDispatcher to root ComponentContext
+                ),
+            )
+        }
+
+    application {
+        Window(
+            onCloseRequest = ::exitApplication,
+            onKeyEvent = { event ->
+                if ((event.key == Key.Escape) && (event.type == KeyEventType.KeyUp)) {
+                    backDispatcher.back() // Call BackDispatcher on Escape key up event
+                } else {
+                    false
+                }
+            },
+        ) {
+            // Compose content
+        }
+    }
+}
+```
+
+<Tip>
+  `backDispatcher.back()` returns `true` if an enabled callback handled the event, or `false` if nothing did. You can use this return value to decide whether to close the window.
+</Tip>

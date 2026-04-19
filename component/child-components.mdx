@@ -1,0 +1,118 @@
+---
+title: "Child Components: Building Component Trees with childContext"
+description: "Create permanent child components using the childContext() extension, control child lifecycles with LifecycleRegistry, and understand when to use navigation versus manual children."
+---
+
+Decompose is built around the idea of decomposing a UI into a tree of independent, reusable components — hence the library name. Each parent component is aware only of its immediate children, and each child is entirely self-contained. When you reuse a subtree elsewhere in the application, you only need to satisfy the root component's dependencies. This page covers how to create and manage child components manually, outside of a navigation model.
+
+## Two approaches to child components
+
+There are two common patterns for working with child components:
+
+1. **Navigation** — use `childStack`, `childSlot`, `childPages`, or `childPanel` when you need to dynamically switch which child is active. See the [Navigation](/navigation/overview) docs.
+2. **Manual** — use `childContext()` when you need a permanent child that is always present, or when you need explicit lifecycle control over a child.
+
+## childContext()
+
+Every component creates a child `ComponentContext` using the `childContext()` extension function:
+
+```
+ComponentContext.childContext(key: String, lifecycle: Lifecycle? = null): ComponentContext
+```
+
+<ParamField path="key" type="String" required>
+  A unique string that scopes this child's `StateKeeper` and `InstanceKeeper` registrations within the parent. Must be stable across restarts.
+</ParamField>
+
+<ParamField path="lifecycle" type="Lifecycle" default="null">
+  An optional lifecycle to further constrain the child's lifecycle. When provided, the child's effective lifecycle is the intersection of the parent's lifecycle and this value — whichever reaches a lower state first applies.
+</ParamField>
+
+<Warning>
+  Never pass the parent's `ComponentContext` directly to a child component. Always use `childContext()`. If the same context is shared between multiple components, they will collide on `StateKeeper` and `InstanceKeeper` keys, causing runtime crashes.
+</Warning>
+
+## Permanent child components
+
+A permanent child is always instantiated during the parent's initialization and lives for the entire duration of the parent's lifecycle. It is destroyed automatically when the parent is destroyed. You do not destroy it manually.
+
+```kotlin title="Child component without lifecycle control"
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.childContext
+
+class SomeParent(componentContext: ComponentContext) : ComponentContext by componentContext {
+
+    val counter: Counter = Counter(childContext(key = "Counter"))
+}
+```
+
+The `Counter` component now has its own `Lifecycle`, `StateKeeper`, `InstanceKeeper`, and `BackHandler`, all scoped to the `"Counter"` key within this parent.
+
+## Child components with lifecycle control
+
+Pass a `LifecycleRegistry` as the `lifecycle` argument to `childContext()` when you want to manually resume, pause, or stop a permanent child — for example to pause background processing while a modal is shown.
+
+```kotlin title="Child component with lifecycle control"
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.childContext
+import com.arkivanov.essenty.lifecycle.LifecycleRegistry
+import com.arkivanov.essenty.lifecycle.resume
+import com.arkivanov.essenty.lifecycle.stop
+
+class SomeParent(componentContext: ComponentContext) : ComponentContext by componentContext {
+
+    // Never destroy the lifecycle of a permanent child component!
+    private val counterLifecycle = LifecycleRegistry()
+
+    val counter: Counter = Counter(childContext(key = "Counter", lifecycle = counterLifecycle))
+
+    private fun resumeCounter() {
+        counterLifecycle.resume()
+    }
+
+    private fun stopCounter() {
+        counterLifecycle.stop()
+    }
+}
+```
+
+<Warning>
+  Never call `counterLifecycle.destroy()` on a permanent child's lifecycle. Destruction of permanent children is managed automatically by Decompose when the parent is destroyed. Manually destroying the child lifecycle while the parent is still alive will put the child in an inconsistent state.
+</Warning>
+
+## When to use navigation vs. manual children
+
+| Use case | Recommendation |
+|---|---|
+| Switching between screens | Navigation (`childStack`, `childSlot`, etc.) |
+| Tabs all loaded at once | `childPages` or manual with `childContext()` |
+| Always-present sidebar or panel | Manual with `childContext()` |
+| Child that can be shown/hidden | `childSlot` or manual with lifecycle control |
+| Full independent reusable subtree | Manual with `childContext()` |
+
+<Tip>
+  If a child component might need to be navigated to independently, or if its creation should be deferred until first visit, use a navigation model. Manual `childContext()` is best suited for children that are always present and always created with the parent.
+</Tip>
+
+## Component key uniqueness
+
+The `key` parameter passed to `childContext()` must be unique among all direct children of a given parent. It scopes the child's state and retained instances, so if two children share a key, their persisted data will overwrite each other.
+
+```kotlin
+class SomeParent(componentContext: ComponentContext) : ComponentContext by componentContext {
+
+    // Each child gets a unique key
+    val header = HeaderComponent(childContext(key = "Header"))
+    val body = BodyComponent(childContext(key = "Body"))
+    val footer = FooterComponent(childContext(key = "Footer"))
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Navigation overview" icon="map" href="/navigation/overview">
+    Learn about Child Stack, Child Slot, Child Pages, and other navigation models.
+  </Card>
+  <Card title="Lifecycle" icon="rotate" href="/component/lifecycle">
+    Understand lifecycle states and how child lifecycle bounds work.
+  </Card>
+</CardGroup>

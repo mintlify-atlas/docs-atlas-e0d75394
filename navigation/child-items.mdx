@@ -1,0 +1,220 @@
+---
+title: "Child Items: Lazy List Navigation in Decompose KMP"
+description: "Manage arbitrary child lists in Decompose with viewport-based lifecycle control. Learn ItemsNavigation, setItems, and setActiveItems for lazy lists."
+---
+
+Child Items is a Decompose navigation model for managing an arbitrary list of child components where you control which components are active and what their lifecycle states are. Unlike other navigation models, multiple components can be `RESUMED` simultaneously. The canonical use case is a lazy list or grid where only the visible items need to be fully active.
+
+<Warning>
+  Child Items is experimental and available since version `3.4.0-alpha02`. The API is subject to change.
+</Warning>
+
+## Core concepts
+
+Child Items is built from three types:
+
+- **`Items<C>`** — the navigation state: `items` (the full list of configurations) and `activeItems` (a `Map<C, ActiveLifecycleState>` specifying which configurations are instantiated and what lifecycle state they hold).
+- **`ChildItems<C, T>`** — the observable output: `items` (all configurations) and `activeItems` (a map of active component wrappers with their lifecycle states).
+- **`ItemsNavigation<C>`** — the mutable handle you call navigation operations on.
+- **`LazyChildItems<C, T>`** — the return type of `childItems()`. In addition to observing the state, it provides a `get(config)` function to retrieve (or lazily create) a component for a given configuration.
+
+<Note>
+  Child Items does **not** support duplicate configurations. `IllegalStateException` is thrown if duplicate configurations are detected, regardless of the `DecomposeSettings.duplicateConfigurationsEnabled` flag.
+</Note>
+
+### Lifecycle states for active items
+
+| `ActiveLifecycleState` | Decompose `Lifecycle.State` |
+|---|---|
+| `CREATED` | `CREATED` |
+| `STARTED` | `STARTED` |
+| `RESUMED` | `RESUMED` |
+
+Components whose configurations are absent from `activeItems` are `DESTROYED` (not instantiated).
+
+## Setting up Child Items
+
+<Steps>
+  <Step title="Create an ItemsNavigation instance">
+    ```kotlin
+    private val navigation = ItemsNavigation<Item>()
+    ```
+  </Step>
+  <Step title="Call childItems() on ComponentContext">
+    ```kotlin
+    val items: LazyChildItems<Item, ItemComponent> =
+        childItems(
+            source = navigation,
+            serializer = Item.serializer(), // null to disable state saving
+            initialItems = {
+                Items(
+                    items = List(100) { index -> Item(id = index, data = "Item $index") },
+                )
+            },
+        ) { item, childComponentContext ->
+            DefaultItemComponent(
+                componentContext = childComponentContext,
+                item = item,
+            )
+        }
+    ```
+  </Step>
+  <Step title="Update active items from the viewport">
+    As the user scrolls, call `setActiveItems` to reflect which items are currently visible and what lifecycle state they should have.
+
+    ```kotlin
+    fun onViewportChanged(visibleRange: IntRange) {
+        navigation.setActiveItems { _ ->
+            items.items.value
+                .filterIndexed { index, _ -> index in visibleRange }
+                .associate { config ->
+                    config to ActiveLifecycleState.RESUMED
+                }
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+### childItems() parameters
+
+<ParamField path="source" type="NavigationSource<ItemsNavEvent<C>>" required>
+  The `ItemsNavigation` instance that drives this model.
+</ParamField>
+
+<ParamField path="serializer" type="KSerializer<C>?">
+  A kotlinx-serialization serializer for the configuration type. Pass `null` to opt out of navigation state persistence. For large lists you can alternatively pass `stateSaver = transientNavStateSaver()` to keep state over configuration changes but not process death.
+</ParamField>
+
+<ParamField path="initialItems" type="() -> Items<C>" required>
+  Factory that returns the initial `Items` state. You can start with no active items and update them once the first layout pass completes.
+</ParamField>
+
+<ParamField path="key" type="String" default="DefaultChildItems">
+  Unique key within the parent component.
+</ParamField>
+
+<ParamField path="childFactory" type="(C, ComponentContext) -> T">
+  Factory function called to create a child component when a configuration is activated.
+</ParamField>
+
+## Navigation operations
+
+### setItems(transformer)
+
+Replaces the full list of item configurations. Components for configurations no longer in the list are destroyed.
+
+```kotlin
+// Add new items
+navigation.setItems { items -> items + newItems }
+
+// Remove an item
+navigation.setItems { items -> items - removedItem }
+```
+
+### setActiveItems(transformer)
+
+Updates the map of currently instantiated items and their lifecycle states without changing the overall list.
+
+```kotlin
+navigation.setActiveItems { activeItems ->
+    // Activate Item1 as RESUMED, deactivate Item3
+    activeItems + (Item1 to ActiveLifecycleState.RESUMED) - Item3
+}
+```
+
+## Full example
+
+<CodeGroup>
+
+```kotlin ItemComponent.kt
+import com.arkivanov.decompose.ComponentContext
+import kotlinx.serialization.Serializable
+
+interface ItemComponent {
+    val item: Item
+}
+
+@Serializable
+data class Item(val id: Int, val data: String)
+
+class DefaultItemComponent(
+    componentContext: ComponentContext,
+    override val item: Item,
+) : ItemComponent, ComponentContext by componentContext
+```
+
+```kotlin DefaultItemsComponent.kt
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.router.items.Items
+import com.arkivanov.decompose.router.items.ItemsNavigation
+import com.arkivanov.decompose.router.items.LazyChildItems
+import com.arkivanov.decompose.router.items.childItems
+import com.arkivanov.decompose.router.items.setItems
+
+interface ItemsComponent {
+    val items: LazyChildItems<Item, ItemComponent>
+}
+
+class DefaultItemsComponent(
+    componentContext: ComponentContext,
+) : ItemsComponent, ComponentContext by componentContext {
+
+    private val navigation = ItemsNavigation<Item>()
+
+    override val items: LazyChildItems<Item, ItemComponent> =
+        childItems(
+            source = navigation,
+            serializer = Item.serializer(),
+            initialItems = {
+                Items(
+                    items = List(100) { index ->
+                        Item(id = index, data = "Item $index")
+                    },
+                )
+            },
+        ) { item, childComponentContext ->
+            DefaultItemComponent(
+                componentContext = childComponentContext,
+                item = item,
+            )
+        }
+
+    fun addMoreItems(newItems: List<Item>) {
+        navigation.setItems { existing -> existing + newItems }
+    }
+}
+```
+
+</CodeGroup>
+
+## State preservation for large lists
+
+For lists with many items, serializing the entire list to the saved state bundle on every process death can exceed Android's bundle size limit or simply be unnecessary. Use `transientNavStateSaver()` to retain state over configuration changes (in-memory) without persisting to disk:
+
+```kotlin
+childItems(
+    source = navigation,
+    stateSaver = transientNavStateSaver(), // survives rotation, not process death
+    initialItems = { Items(items = loadItemsFromDatabase()) },
+    // ...
+)
+```
+
+## Multiple Child Items in one component
+
+Each Child Items instance in the same parent must have a unique `key`:
+
+```kotlin
+private val feedItems = childItems<FeedItem, FeedItemComponent>(
+    source = feedNavigation,
+    key = "FeedItems",
+    // ...
+)
+
+private val searchItems = childItems<SearchResult, SearchResultComponent>(
+    source = searchNavigation,
+    key = "SearchItems",
+    // ...
+)
+```

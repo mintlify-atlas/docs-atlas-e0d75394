@@ -1,0 +1,132 @@
+---
+title: "Component Lifecycle: States, Events, and Platform Setup"
+description: "Learn how Decompose manages component lifecycles, subscribe to lifecycle events with callbacks or lambda shortcuts, and control the root lifecycle on each platform."
+---
+
+Every Decompose component has its own lifecycle, provided by the `Lifecycle` abstraction from the [Essenty](https://github.com/arkivanov/Essenty) library. The component lifecycle is intentionally modelled after the Android Activity lifecycle, so the mental model transfers directly. The `decompose` module includes Essenty's `lifecycle` module as an `api` dependency, so you do not need to add it separately to your project. Because each component owns its lifecycle independently, resources are naturally scoped: they start when the component starts and are cleaned up when the component is destroyed.
+
+## Lifecycle states
+
+A component moves through the following ordered states:
+
+- **INITIALIZED** — the component has been created but `onCreate` has not yet fired
+- **CREATED** — `onCreate` has fired; the component is created but not visible
+- **STARTED** — the component is partially visible
+- **RESUMED** — the component is fully visible and active
+- **DESTROYED** — the component has been permanently destroyed
+
+Transitions between states fire corresponding lifecycle events: `onCreate`, `onStart`, `onResume`, `onPause`, `onStop`, and `onDestroy`.
+
+<Info>
+  The lifecycle of a child component can never be longer than its parent's lifecycle. When a parent is destroyed, all of its children are destroyed first.
+</Info>
+
+## Subscribing to lifecycle events
+
+`ComponentContext` extends `LifecycleOwner`, which exposes a `lifecycle` property. You can subscribe using a `Lifecycle.Callbacks` object, a lambda-per-event variant, or the individual `doOn*` extension functions.
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.lifecycle.Lifecycle
+import com.arkivanov.essenty.lifecycle.doOnCreate
+import com.arkivanov.essenty.lifecycle.subscribe
+
+class SomeComponent(
+    componentContext: ComponentContext
+) : ComponentContext by componentContext {
+
+    init {
+        // Option 1: Callbacks object
+        lifecycle.subscribe(
+            object : Lifecycle.Callbacks {
+                override fun onCreate() {
+                    /* Component created */
+                }
+
+                // onStart, onResume, onPause, onStop, onDestroy
+            }
+        )
+
+        // Option 2: Named lambda parameters
+        lifecycle.subscribe(
+            onCreate = { /* Component created */ },
+            // onStart, onResume, onPause, onStop, onDestroy
+        )
+
+        // Option 3: Individual extension functions
+        lifecycle.doOnCreate { /* Component created */ }
+        // doOnStart, doOnResume, doOnPause, doOnStop, doOnDestroy
+    }
+}
+```
+
+<Tip>
+  Use `doOnDestroy {}` to release any resources — coroutine scopes, observers, file handles — that were created in `init` or `doOnCreate`. This mirrors the `onCleared()` pattern familiar from AndroidX `ViewModel`.
+</Tip>
+
+## Available lifecycle callbacks
+
+| Callback | Triggered when |
+|---|---|
+| `onCreate` | The component is first created |
+| `onStart` | The component becomes at least partially visible |
+| `onResume` | The component becomes fully active and interactive |
+| `onPause` | The component loses full focus (still visible) |
+| `onStop` | The component is no longer visible |
+| `onDestroy` | The component is permanently destroyed |
+
+## Child and parent lifecycles
+
+Child components created via `childContext()` inherit lifecycle bounds from their parent. A child component cannot remain alive after its parent has been destroyed. Additionally, when you pass a custom `Lifecycle` to `childContext(key, lifecycle)`, the effective lifecycle of the child is the intersection of the parent's lifecycle and the supplied lifecycle — whichever reaches a lower state wins.
+
+See the [Child components](/component/child-components) page for details on `childContext()`.
+
+## Managing the root lifecycle
+
+The root component is the entry point into the component tree. How you supply and control the root lifecycle depends on the platform.
+
+<Tabs>
+  <Tab title="Android">
+    On Android, `defaultComponentContext()` in an `Activity` or `Fragment` wires the lifecycle automatically by observing the Activity or Fragment lifecycle. You do not manage it manually.
+
+    ```kotlin
+    import android.os.Bundle
+    import androidx.appcompat.app.AppCompatActivity
+    import com.arkivanov.decompose.defaultComponentContext
+
+    class MainActivity : AppCompatActivity() {
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+
+            val root = DefaultRootComponent(defaultComponentContext())
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Desktop / other platforms">
+    On JVM and other non-Android platforms, create a `LifecycleRegistry`, advance it to `RESUMED` before showing the window, and call `stop()` / `destroy()` when the window closes.
+
+    ```kotlin
+    import com.arkivanov.decompose.DefaultComponentContext
+    import com.arkivanov.essenty.lifecycle.LifecycleRegistry
+    import com.arkivanov.essenty.lifecycle.resume
+    import com.arkivanov.essenty.lifecycle.stop
+
+    val lifecycle = LifecycleRegistry()
+    val root = runOnUiThread {
+        DefaultRootComponent(componentContext = DefaultComponentContext(lifecycle = lifecycle))
+    }
+
+    // After showing the window:
+    lifecycle.resume()
+
+    // When the window closes:
+    lifecycle.stop()
+    lifecycle.destroy()
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Refer to the [Quick start](/getting-started/quickstart) guide for complete, runnable platform examples including iOS and Web.
+</Note>

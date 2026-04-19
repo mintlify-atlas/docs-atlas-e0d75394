@@ -1,0 +1,82 @@
+---
+title: "Decompose: Kotlin Multiplatform BLoC Navigation Library"
+description: "Decompose is a Kotlin Multiplatform library for lifecycle-aware business logic components with tree-structured navigation and pluggable UI support."
+---
+
+Decompose is a Kotlin Multiplatform library that breaks your application code into tree-structured, lifecycle-aware business logic components — commonly called BLoCs. Each component encapsulates its own logic and lifecycle, while UI is entirely optional and plugged in from outside, enabling true separation of concerns across Android, iOS, Desktop, and Web platforms.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Add Decompose to your Kotlin Multiplatform project with Gradle setup for all modules.
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/getting-started/quickstart">
+    Build your first component with navigation in minutes using real code examples.
+  </Card>
+  <Card title="Components" icon="puzzle-piece" href="/component/overview">
+    Learn how ComponentContext, lifecycle, state preservation, and back handling work.
+  </Card>
+  <Card title="Navigation" icon="map" href="/navigation/overview">
+    Explore Child Stack, Slot, Pages, Panels, and Items navigation models.
+  </Card>
+</CardGroup>
+
+## Why Decompose?
+
+Decompose takes a different approach to multiplatform architecture. Instead of making UI the orchestrator of navigation, Decompose puts business logic in charge. Components form a strict parent-child tree — each parent only knows its immediate children — which enables:
+
+- **Pluggable UI** — connect Compose, SwiftUI, React, or Android Views to the same component
+- **Shared navigation logic** — navigate in pure Kotlin, no platform-specific code required
+- **Testable business logic** — unit-test components without instrumentation or UI frameworks
+- **Lifecycle awareness** — every component has its own lifecycle, automatically managed
+
+<CardGroup cols={2}>
+  <Card title="Child Stack" icon="layer-group" href="/navigation/child-stack">
+    The most common pattern: a back-stack of screens with automatic back-button handling.
+  </Card>
+  <Card title="Child Slot" icon="toggle-on" href="/navigation/child-slot">
+    Show or dismiss a single optional child component such as a dialog or bottom sheet.
+  </Card>
+  <Card title="Child Pages" icon="file-lines" href="/navigation/child-pages">
+    A pager-style list of components with one selected page at a time.
+  </Card>
+  <Card title="Compose Extensions" icon="wand-magic-sparkles" href="/extensions/compose">
+    subscribeAsState, Children, animations, and predictive back gesture support.
+  </Card>
+</CardGroup>
+
+## Supported platforms
+
+Decompose supports the following Kotlin Multiplatform targets:
+
+| Target | Support |
+|--------|---------|
+| Android | Full support |
+| iOS (arm64, x64, simulator) | Full support |
+| JVM / Desktop | Full support |
+| macOS | Full support |
+| watchOS / tvOS | Full support |
+| JS (Canvas) | Full support |
+| Wasm (wasmJs) | Full support |
+
+## Key concepts
+
+<AccordionGroup>
+  <Accordion title="Component">
+    A component is just a normal Kotlin class — no base class required. It encapsulates business logic and optionally exposes state. UI is plugged in externally, making components fully testable without any UI framework.
+  </Accordion>
+  <Accordion title="ComponentContext">
+    Every component receives a `ComponentContext` that provides lifecycle, state preservation (`StateKeeper`), instance retaining (`InstanceKeeper`), and back-button handling (`BackHandler`). Use delegation to bring all these APIs into your component's scope.
+  </Accordion>
+  <Accordion title="Configuration">
+    Each child component is identified by a persistent `@Serializable` configuration class that holds its arguments. Decompose automatically saves and restores configurations across process death and configuration changes.
+  </Accordion>
+  <Accordion title="Value / MutableValue">
+    Decompose provides its own observable state holder `Value<T>` that works with Compose, SwiftUI, and Kotlin/React without requiring coroutines. Convert to `StateFlow` or `Flow` as needed.
+  </Accordion>
+</AccordionGroup>
+
+## Community
+
+- [GitHub Discussions](https://github.com/arkivanov/Decompose/discussions) — ask questions and share ideas
+- [Kotlin Slack #decompose](https://kotlinlang.slack.com/archives/C03H3N51SKT) — real-time community chat
+- [Template repository](https://github.com/arkivanov/decompose-multiplatform-template) — kick-start a new KMP project

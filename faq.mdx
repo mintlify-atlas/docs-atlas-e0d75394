@@ -1,0 +1,201 @@
+---
+title: "Decompose FAQ: Common Errors and Platform Issues"
+description: "Answers to frequently asked questions about Decompose: lifecycle on iOS, StateKeeper errors, duplicate configuration exceptions, and thread safety."
+---
+
+This page covers the most commonly encountered issues when using Decompose, including platform-specific lifecycle setup, `StateKeeper` errors, and navigation edge cases.
+
+<AccordionGroup>
+
+<Accordion title="Why are lifecycle callbacks not called on iOS (or other non-Android platforms)?">
+
+On non-Android platforms, the `Lifecycle` must be controlled manually. You need to create a `LifecycleRegistry`, pass it to `DefaultComponentContext`, and drive it from platform-specific lifecycle events.
+
+### Using ApplicationLifecycle (recommended for app-scoped root)
+
+If your root component lives in the application scope (the entire app uses Decompose, not just one screen), use `ApplicationLifecycle` from Essenty:
+
+```swift AppDelegate.swift
+class AppDelegate: NSObject, UIApplicationDelegate {
+    let root: RootComponent = DefaultRootComponent(
+        componentContext: DefaultComponentContext(lifecycle: ApplicationLifecycle())
+    )
+}
+```
+
+### Manual LifecycleRegistry
+
+For UIViewController-scoped root components, manage the lifecycle manually:
+
+```swift RootHolder.swift
+class RootHolder: ObservableObject {
+    let lifecycle: LifecycleRegistry
+    let root: RootComponent
+
+    init() {
+        lifecycle = LifecycleRegistryKt.LifecycleRegistry()
+        root = DefaultRootComponent(
+            componentContext: DefaultComponentContext(lifecycle: lifecycle)
+        )
+        LifecycleRegistryExtKt.create(lifecycle)
+    }
+
+    deinit {
+        LifecycleRegistryExtKt.destroy(lifecycle)
+    }
+}
+```
+
+Then drive lifecycle events from your SwiftUI `App` or `UIApplicationDelegate`:
+
+```swift
+.onChange(of: scenePhase) { newPhase in
+    switch newPhase {
+    case .background: LifecycleRegistryExtKt.stop(rootHolder.lifecycle)
+    case .inactive:   LifecycleRegistryExtKt.pause(rootHolder.lifecycle)
+    case .active:     LifecycleRegistryExtKt.resume(rootHolder.lifecycle)
+    @unknown default: break
+    }
+}
+```
+
+### Desktop with Compose
+
+Use `LifecycleController` to bind the root lifecycle to the window state:
+
+```kotlin main.kt
+val lifecycle = LifecycleRegistry()
+val root = runOnUiThread { DefaultRootComponent(DefaultComponentContext(lifecycle)) }
+
+application {
+    val windowState = rememberWindowState()
+    LifecycleController(lifecycle, windowState)
+    Window(onCloseRequest = ::exitApplication, state = windowState) {
+        RootContent(root)
+    }
+}
+```
+
+</Accordion>
+
+<Accordion title='Error: "Another supplier is already registered with the key"'>
+
+This exception is thrown by `StateKeeper` when its `register` method is called a second time with the same key. Common causes:
+
+**1. Root component created inside a Composable function**
+
+Compositions can run on a background thread and may re-compose, creating a second instance of the root component. Create the root component *outside* Compose on the UI thread:
+
+```kotlin MainActivity.kt
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Create root BEFORE setContent
+        val root = DefaultRootComponent(componentContext = defaultComponentContext())
+
+        setContent {
+            RootContent(root)
+        }
+    }
+}
+```
+
+**2. Navigation property using a getter instead of assignment**
+
+```kotlin
+// Wrong — creates a new childStack on every access
+val stack: Value<ChildStack<...>> get() = childStack(...)
+
+// Correct — assigned once at construction time
+val stack: Value<ChildStack<...>> = childStack(...)
+```
+
+**3. Two navigation models of the same kind without unique keys**
+
+When you have more than one `childStack` (or other navigation model of the same kind) in a single component, supply a unique `key` argument to each:
+
+```kotlin
+val stack1: Value<ChildStack<...>> = childStack(key = "stack1", ...)
+val stack2: Value<ChildStack<...>> = childStack(key = "stack2", ...)
+```
+
+</Accordion>
+
+<Accordion title='Error: "Configurations must be unique"'>
+
+This exception is thrown when a navigation model detects duplicate component configurations. Configurations are compared using `equals()`, so every configuration must implement it correctly (use `data class`).
+
+**Common cause: accidental double-clicks on a button that calls `push()`**
+
+Use `pushNew` instead of `push` — it is a no-op if the configuration is already at the top of the stack:
+
+```kotlin
+// Instead of:
+navigation.push(Config.Details(item = item))
+
+// Use:
+navigation.pushNew(Config.Details(item = item))
+```
+
+**Prevent multiple screens with the same data:**
+
+Use `pushToFront` to move an existing configuration to the front rather than adding a duplicate:
+
+```kotlin
+navigation.pushToFront(Config.Details(item = item))
+```
+
+**Enable duplicate configurations mode (opt-in)**
+
+Since version `3.5.0-alpha01`, you can allow duplicates globally by setting:
+
+```kotlin
+import com.arkivanov.decompose.DecomposeSettings
+
+DecomposeSettings.duplicateConfigurationsEnabled = true
+```
+
+<Warning>
+Child Items navigation does not support duplicate configurations even when this flag is enabled.
+</Warning>
+
+</Accordion>
+
+<Accordion title="How do I navigate on the main thread?">
+
+Decompose's navigation API is technically thread-safe, but you should always initialize components and perform navigation on the main thread. Navigation is synchronous — Decompose instantiates components and calls lifecycle callbacks on the calling thread. Navigating on a background thread can cause unexpected behavior.
+
+Decompose attempts to detect off-main-thread navigation and calls `onDecomposeError` when it happens. By default this logs the exception. You can override the handler:
+
+```kotlin
+import com.arkivanov.decompose.errorhandler.onDecomposeError
+
+onDecomposeError = { error ->
+    // Custom error handling
+}
+```
+
+</Accordion>
+
+<Accordion title="Can I have multiple navigation models in one component?">
+
+Yes. A single parent component can have multiple navigation models of any type. If you use two or more navigation models of the *same* kind (e.g. two `childStack` calls), you must supply a unique `key` argument to each so their states don't collide in `StateKeeper`:
+
+```kotlin
+val mainStack = childStack(key = "main", ...)
+val dialogStack = childStack(key = "dialog", ...)
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Component overview" icon="puzzle-piece" href="/component/overview">
+    Understand ComponentContext and root component creation.
+  </Card>
+  <Card title="Navigation overview" icon="map" href="/navigation/overview">
+    Learn about configuration requirements and navigation models.
+  </Card>
+</CardGroup>

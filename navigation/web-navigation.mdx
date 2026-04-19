@@ -1,0 +1,229 @@
+---
+title: "Web Navigation: Browser History Sync for Decompose KMP"
+description: "Synchronize Decompose navigation state with the browser URL and history on Kotlin/JS and Kotlin/Wasm targets using WebNavigationOwner and withWebHistory."
+---
+
+Web Navigation is the Decompose API for keeping your component navigation state in sync with the browser's URL bar and history. When users click the browser back or forward buttons, your Decompose navigation responds automatically. When your components navigate, the URL updates to reflect the new state.
+
+<Warning>
+  This API is experimental and available since version `3.3.0-alpha01`. The API is subject to change.
+</Warning>
+
+## Supported navigation models
+
+| Navigation model | Web Navigation function |
+|---|---|
+| [Child Stack](/navigation/child-stack) | `childStackWebNavigation` |
+| [Child Pages](/navigation/child-pages) | `childPagesWebNavigation` |
+| [Child Panels](/navigation/child-panels) | `childPanelsWebNavigation` |
+
+<Note>
+  Child Slot is not currently supported by Web Navigation. Nested navigation is supported — a component tree can contain up to one active `WebNavigationOwner` child at any level.
+</Note>
+
+## WebNavigation and WebNavigationOwner
+
+The API is built around two interfaces:
+
+- **`WebNavigation<*>`** — a two-way controller that connects a navigation model to the browser history. You do not implement this interface directly.
+- **`WebNavigationOwner`** — an interface your component implements by exposing a `webNavigation` property. Decompose walks the component tree looking for `WebNavigationOwner` instances to wire up.
+
+Your component implements `WebNavigationOwner` and sets `webNavigation` to the value returned by one of the `childXxxWebNavigation` functions.
+
+## Enabling web navigation in the app entry point
+
+Call `withWebHistory {}` in your `js` or `wasmJs` main function. The lambda receives a `StateKeeper` (to create the root `ComponentContext` so page-reload state is preserved) and an optional `deepLink` URL string (use it to seed the initial navigation state).
+
+<Warning>
+`withWebHistory` requires `@OptIn(ExperimentalDecomposeApi::class)`.
+</Warning>
+
+<Tabs>
+  <Tab title="js">
+    ```kotlin jsMain/Main.kt
+    import com.arkivanov.decompose.ExperimentalDecomposeApi
+    import com.arkivanov.decompose.router.webhistory.withWebHistory
+
+    @OptIn(ExperimentalDecomposeApi::class)
+    fun main() {
+        withWebHistory { stateKeeper, deepLink ->
+            val root = DefaultRootComponent(
+                componentContext = DefaultComponentContext(
+                    lifecycle = LifecycleRegistry().also { it.resume() },
+                    stateKeeper = stateKeeper,
+                ),
+                deepLinkUrl = deepLink,
+            )
+            // Mount your Compose or other UI here
+            root
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="wasmJs">
+    ```kotlin wasmJsMain/Main.kt
+    import com.arkivanov.decompose.ExperimentalDecomposeApi
+    import com.arkivanov.decompose.router.webhistory.withWebHistory
+
+    @OptIn(ExperimentalDecomposeApi::class)
+    fun main() {
+        withWebHistory { stateKeeper, deepLink ->
+            val root = DefaultRootComponent(
+                componentContext = DefaultComponentContext(
+                    lifecycle = LifecycleRegistry().also { it.resume() },
+                    stateKeeper = stateKeeper,
+                ),
+                deepLinkUrl = deepLink,
+            )
+            root
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Development server configuration
+
+A single-page application needs the web server to serve the same `index.html` for every path, so that a direct URL like `/items/42` does not return a 404.
+
+For local development with webpack-dev-server, create the following file:
+
+```javascript webpack.config.d/devServerConfig.js
+// <js app module>/webpack.config.d/devServerConfig.js
+
+config.devServer = {
+  ...config.devServer,
+  "historyApiFallback": true,
+};
+```
+
+Configure your production server with an equivalent catch-all rule (e.g., nginx `try_files $uri /index.html`, or a 404-to-index redirect in your CDN).
+
+## Web Navigation with Child Stack
+
+<Steps>
+  <Step title="Implement WebNavigationOwner in the interface">
+    ```kotlin
+    import com.arkivanov.decompose.router.stack.ChildStack
+    import com.arkivanov.decompose.router.webhistory.WebNavigationOwner
+    import com.arkivanov.decompose.value.Value
+
+    interface MyStackComponent : WebNavigationOwner {
+        val stack: Value<ChildStack<*, Child>>
+
+        sealed class Child { /* ... */ }
+    }
+    ```
+  </Step>
+  <Step title="Set up the stack and web navigation in the implementation">
+    ```kotlin
+    import com.arkivanov.decompose.ComponentContext
+    import com.arkivanov.decompose.router.stack.ChildStack
+    import com.arkivanov.decompose.router.stack.StackNavigation
+    import com.arkivanov.decompose.router.stack.childStack
+    import com.arkivanov.decompose.router.stack.childStackWebNavigation
+    import com.arkivanov.decompose.router.webhistory.WebNavigation
+    import com.arkivanov.decompose.value.Value
+    import kotlinx.serialization.Serializable
+
+    class DefaultMyStackComponent(
+        componentContext: ComponentContext,
+        deepLinkUrl: String?,
+    ) : MyStackComponent, ComponentContext by componentContext {
+
+        private val nav = StackNavigation<Config>()
+
+        private val _stack: Value<ChildStack<Config, MyStackComponent.Child>> =
+            childStack(
+                source = nav,
+                serializer = Config.serializer(),
+                initialStack = { parseDeepLink(deepLinkUrl) },
+                childFactory = { config, ctx -> createChild(config, ctx) },
+            )
+
+        override val stack: Value<ChildStack<*, MyStackComponent.Child>> = _stack
+
+        override val webNavigation: WebNavigation<*> =
+            childStackWebNavigation(
+                navigator = nav,
+                stack = _stack,
+                serializer = Config.serializer(),
+                pathMapper = { child -> child.configuration.toPath() },       // optional
+                parametersMapper = { child -> child.configuration.toParams() }, // optional
+                childSelector = { child -> child.instance as? WebNavigationOwner }, // optional, for nesting
+            )
+
+        @Serializable
+        private sealed interface Config { /* ... */ }
+    }
+    ```
+  </Step>
+</Steps>
+
+### childStackWebNavigation parameters
+
+<ParamField path="navigator" type="StackNavigator<C>" required>
+  The `StackNavigation` instance used to perform back navigation when the browser back button is pressed.
+</ParamField>
+
+<ParamField path="stack" type="Value<ChildStack<C, T>>" required>
+  The observable `ChildStack` state to synchronize with the browser history.
+</ParamField>
+
+<ParamField path="serializer" type="KSerializer<C>" required>
+  Used to serialize and deserialize the configuration from browser state.
+</ParamField>
+
+<ParamField path="pathMapper" type="(Child.Created<C, T>) -> String?">
+  Maps each stack entry to a URL path segment. Return `null` to omit the entry from the URL. When omitted, the URL is not updated.
+</ParamField>
+
+<ParamField path="parametersMapper" type="(Child.Created<C, T>) -> Map<String, String>?">
+  Maps each stack entry to URL query parameters. Return `null` to omit parameters.
+</ParamField>
+
+<ParamField path="childSelector" type="(Child.Created<C, T>) -> WebNavigationOwner?">
+  Returns a `WebNavigationOwner` child component (for nested navigation support). Only zero or one child `WebNavigationOwner` is allowed at a time.
+</ParamField>
+
+## Web Navigation with Child Pages
+
+```kotlin
+import com.arkivanov.decompose.router.pages.childPagesWebNavigation
+
+override val webNavigation: WebNavigation<*> =
+    childPagesWebNavigation(
+        navigator = nav,
+        pages = _pages,
+        serializer = Config.serializer(),
+        pathMapper = { pages -> pages.selectedIndex.toString() }, // optional
+        parametersMapper = { _ -> null },                          // optional
+        childSelector = { child -> child.instance as? WebNavigationOwner }, // optional
+    )
+```
+
+## Web Navigation with Child Panels
+
+```kotlin
+import com.arkivanov.decompose.router.panels.childPanelsWebNavigation
+
+override val webNavigation: WebNavigation<*> =
+    childPanelsWebNavigation(
+        navigator = nav,
+        panels = _panels,
+        serializers = MainConfig.serializer() to DetailsConfig.serializer(),
+        pathMapper = { panels -> panels.details?.configuration?.itemId?.toString() }, // optional
+        parametersMapper = { _ -> null }, // optional
+        childSelector = { panels ->
+            (panels.details?.instance as? WebNavigationOwner)
+                ?: (panels.main.instance as? WebNavigationOwner)
+        }, // optional
+    )
+```
+
+## Rules and constraints
+
+- Only one `WebNavigation` controller is allowed per component.
+- Nested navigation is supported: a child component can also implement `WebNavigationOwner`. Only zero or one nested `WebNavigationOwner` may be active at the same time.
+- The `withWebHistory` function must be called before any component is created.
+- Page reloads are handled automatically: the `StateKeeper` passed to `withWebHistory` saves and restores the navigation state so users do not lose their place on reload.

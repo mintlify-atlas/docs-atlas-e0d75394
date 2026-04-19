@@ -1,0 +1,191 @@
+---
+title: "Android Views Extensions for Decompose"
+description: "Connect Decompose components to Android XML Views using ViewContext, DefaultViewContext, and StackRouterView for stack navigation without Compose."
+---
+
+The `extensions-android` module provides utilities for integrating Decompose with the Android View system (XML layouts). If your Android UI is not yet migrated to Compose, this module lets you bind Decompose components to traditional Android views, manage view lifecycles, and render `ChildStack` navigation changes.
+
+<Warning>
+  All APIs in this module are annotated with `@ExperimentalDecomposeApi`. They may change in future releases.
+</Warning>
+
+## Setup
+
+<Steps>
+  <Step title="Add the dependency">
+    Add `extensions-android` to your Android module's dependencies.
+
+    <Tabs>
+      <Tab title="Kotlin DSL">
+        ```kotlin build.gradle.kts
+        implementation("com.arkivanov.decompose:extensions-android:<version>")
+        ```
+      </Tab>
+      <Tab title="Groovy DSL">
+        ```groovy build.gradle
+        implementation "com.arkivanov.decompose:extensions-android:<version>"
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Core concepts
+
+Decompose is designed for declarative UI frameworks, but its component model is completely UI-agnostic. The `extensions-android` module supplies two building blocks that let you attach Android views to Decompose components.
+
+<CardGroup cols={2}>
+  <Card title="ViewContext" icon="layer-group">
+    Carries the `ViewGroup` parent and an Essenty `Lifecycle` for a view sub-tree. Every view function receives a `ViewContext` instead of a `Context` directly.
+  </Card>
+  <Card title="StackRouterView" icon="table-list">
+    An Android `FrameLayout` that observes a `ChildStack` and calls your `replaceChildView` function whenever the active child changes.
+  </Card>
+</CardGroup>
+
+## `ViewContext`
+
+`ViewContext` is an interface that exposes the two things an Android view sub-tree needs:
+
+- `parent` — the `ViewGroup` where the sub-tree should be inflated.
+- `lifecycle` — the Essenty `Lifecycle` governing this part of the view hierarchy.
+
+Because `ViewContext` implements `LifecycleOwner`, you can subscribe to Decompose `Value` objects using `value.observe(lifecycle) { ... }` without leaking observers.
+
+### Extensions on `ViewContext`
+
+The module provides the following convenience properties and functions on `ViewContext`:
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `context` | `Context` | Android `Context` from `parent.context` |
+| `resources` | `Resources` | Android `Resources` from `parent.resources` |
+| `layoutInflater` | `LayoutInflater` | `LayoutInflater` from `context` |
+| `child(container, inflater)` | function | Creates a child `ViewContext` with a different `parent`, sharing the parent's `Lifecycle`. The `inflater` lambda inflates the sub-tree *without* adding it to the container. |
+
+### `DefaultViewContext`
+
+`DefaultViewContext` is the standard implementation you instantiate directly when you need to create a root `ViewContext`, for example inside an `Activity`.
+
+```kotlin
+class DefaultViewContext(
+    override val parent: ViewGroup,
+    override val lifecycle: Lifecycle,
+) : ViewContext
+```
+
+## Initialising the root in an `Activity`
+
+Create a `DefaultViewContext` bound to the Activity's lifecycle, then use it to inflate and attach the root view.
+
+```kotlin
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import com.arkivanov.decompose.defaultComponentContext
+import com.arkivanov.decompose.extensions.android.DefaultViewContext
+import com.arkivanov.essenty.lifecycle.essentyLifecycle
+
+class MainActivity : AppCompatActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContentView(R.layout.main_activity)
+
+        val root = DefaultCounterComponent(defaultComponentContext())
+
+        val viewContext =
+            DefaultViewContext(
+                parent = findViewById(R.id.content),
+                lifecycle = essentyLifecycle(),
+            )
+
+        viewContext.apply {
+            parent.addView(CounterView(root))
+        }
+    }
+}
+```
+
+## Writing a view function
+
+View functions are extension functions on `ViewContext`. Inflate your layout without adding it to the parent, observe component state, and return the root view. The `lifecycle` from `ViewContext` ensures observers are automatically removed when the view is destroyed.
+
+```kotlin
+import android.view.View
+import android.widget.TextView
+import com.arkivanov.decompose.extensions.android.ViewContext
+import com.arkivanov.decompose.extensions.android.layoutInflater
+import com.arkivanov.decompose.value.observe
+
+fun ViewContext.CounterView(component: CounterComponent): View {
+    // Inflate the layout without adding it to the parent
+    val layout = layoutInflater.inflate(R.layout.counter, parent, false)
+
+    // Find required views
+    val counterText: TextView = layout.findViewById(R.id.text_count)
+
+    // Observe the component model and update the view
+    component.model.observe(lifecycle) { data ->
+        counterText.text = data.text
+    }
+
+    return layout
+}
+```
+
+<Tip>
+  Always inflate with `attachToRoot = false` (the third argument to `inflate`). The `StackRouterView` and `child()` function attach the returned view for you.
+</Tip>
+
+## `StackRouterView`
+
+`StackRouterView` is an Android `FrameLayout` that subscribes to a `Value<ChildStack>` and calls your `replaceChildView` lambda whenever the active child changes. It also handles back-stack state saving and restoration automatically, so views in the back stack preserve their scroll position and other UI state.
+
+Call `children(stack, lifecycle, replaceChildView)` after `StackRouterView` is in the view hierarchy:
+
+| Argument | Description |
+|----------|-------------|
+| `stack` | Observable `Value<ChildStack<C, T>>` |
+| `lifecycle` | Lifecycle of `StackRouterView` or its closest parent |
+| `replaceChildView` | Lambda that adds the new child view to `parent` and optionally animates the transition |
+
+### Example
+
+```kotlin
+import android.view.View
+import com.arkivanov.decompose.extensions.android.ViewContext
+import com.arkivanov.decompose.extensions.android.child
+import com.arkivanov.decompose.extensions.android.layoutInflater
+import com.arkivanov.decompose.extensions.android.stack.StackRouterView
+
+fun ViewContext.RootView(component: RootComponent): View {
+    val layout = layoutInflater.inflate(R.layout.counter_root, parent, false)
+    val nextButton: View = layout.findViewById(R.id.button_next)
+    val routerView: StackRouterView = layout.findViewById(R.id.router)
+
+    nextButton.setOnClickListener { component.onNextChild() }
+
+    // Create a child ViewContext for a permanently visible view
+    child(layout.findViewById(R.id.container_counter)) {
+        CounterView(component.counter)
+    }
+
+    // Subscribe StackRouterView to ChildStack changes
+    routerView.children(component.childStack, lifecycle) { parent, newStack, _ ->
+        // Remove all existing views
+        parent.removeAllViews()
+
+        // Add the view for the currently active child component
+        parent.addView(CounterView(newStack.active.instance))
+    }
+
+    return layout
+}
+```
+
+The third parameter of `replaceChildView` is the previous `ChildStack` (nullable on the first call). You can use it to determine the transition direction and apply an `Animation` or `ViewPropertyAnimator` before or after swapping views.
+
+<Note>
+  For a complete working example, see the [Counter sample](https://github.com/arkivanov/Decompose/tree/master/sample/shared/shared/src/androidMain/kotlin/com/arkivanov/sample/shared/counters) in the Decompose repository.
+</Note>

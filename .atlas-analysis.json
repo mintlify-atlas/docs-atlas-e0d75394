@@ -1,0 +1,100 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Decompose",
+  "projectDescription": "A Kotlin Multiplatform library for building lifecycle-aware business logic components (BLoCs) with tree-structured navigation and pluggable UI support for Compose, SwiftUI, and more.",
+  "theme": "palm",
+  "primaryColor": "#7B5EA7",
+  "lightColor": "#A07DD4",
+  "darkColor": "#4E3875",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "getting-started/installation",
+              "getting-started/quickstart"
+            ]
+          },
+          {
+            "group": "Components",
+            "pages": [
+              "component/overview",
+              "component/lifecycle",
+              "component/state-preservation",
+              "component/instance-retaining",
+              "component/back-button",
+              "component/child-components"
+            ]
+          },
+          {
+            "group": "Navigation",
+            "pages": [
+              "navigation/overview",
+              "navigation/child-stack",
+              "navigation/child-slot",
+              "navigation/child-pages",
+              "navigation/child-panels",
+              "navigation/child-items",
+              "navigation/web-navigation"
+            ]
+          },
+          {
+            "group": "UI Extensions",
+            "pages": [
+              "extensions/compose",
+              "extensions/android"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "component/custom-component-context",
+              "component/jetpack-component-context",
+              "tips-tricks/overview",
+              "samples",
+              "faq"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Tree-structured lifecycle-aware business logic components (BLoCs)",
+    "Multiple navigation models: Child Stack, Child Slot, Child Pages, Child Panels, Child Items",
+    "Pluggable UI — Jetpack/Multiplatform Compose, SwiftUI, Kotlin/React, Android Views",
+    "Kotlin Multiplatform support: Android, iOS, Desktop (JVM), Web (JS/Wasm), macOS, tvOS, watchOS",
+    "State preservation via kotlinx-serialization across all platforms",
+    "Instance retaining (ViewModel equivalent) with InstanceKeeper",
+    "Back button handling with predictive back gesture support",
+    "Generic/custom navigation model API for advanced use cases",
+    "Dependency injection via constructor with type-safe configurations",
+    "Unit-testable business logic without UI instrumentation"
+  ],
+  "publicApiSurface": [
+    "ComponentContext",
+    "DefaultComponentContext",
+    "ChildStack / StackNavigation / childStack()",
+    "ChildSlot / SlotNavigation / childSlot()",
+    "ChildPages / PagesNavigation / childPages()",
+    "ChildPanels / PanelsNavigation / childPanels()",
+    "ChildItems / ItemsNavigation / childItems()",
+    "Value / MutableValue",
+    "Lifecycle / LifecycleRegistry",
+    "StateKeeper / stateKeeper",
+    "InstanceKeeper / instanceKeeper / retainedInstance()",
+    "BackHandler / BackDispatcher / BackCallback",
+    "defaultComponentContext() (Android)",
+    "LifecycleController (Desktop Compose)",
+    "Children() / ChildStack() composables (Compose extensions)",
+    "subscribeAsState() (Compose extensions)",
+    "stackAnimation() / fade() / slide() / scale()",
+    "predictiveBackAnimation() / PredictiveBackParams",
+    "childContext()",
+    "retainedComponent() (Android)"
+  ]
+}

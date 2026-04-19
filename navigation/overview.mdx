@@ -1,0 +1,145 @@
+---
+title: "Navigation Overview: All Decompose Navigation Models"
+description: "Explore all five Decompose navigation models, learn configuration requirements, thread safety rules, and when to choose each model for your KMP app."
+---
+
+Decompose provides a suite of navigation models that manage child component lifecycles in Kotlin Multiplatform projects. This page introduces every built-in model, explains the shared concept of component configurations, and covers cross-cutting concerns like thread safety and duplicate configurations that apply to all navigation models.
+
+## Available navigation models
+
+| Model | Description | Best for |
+|---|---|---|
+| [Child Stack](/navigation/child-stack) | Back stack of components, one active at a time | Screen navigation with back-button support |
+| [Child Slot](/navigation/child-slot) | Zero or one component active at a time | Dialogs, bottom sheets, optional panels |
+| [Child Pages](/navigation/child-pages) | Ordered list with one selected component | Pager / tab navigation |
+| [Child Panels](/navigation/child-panels) | Up to three panels (Main, Details, Extra) | Adaptive list-detail layouts |
+| [Child Items](/navigation/child-items) | Arbitrary list with flexible lifecycle states | Lazy lists and grids |
+
+If none of these fit your needs, Decompose exposes a [Generic Navigation](/navigation/overview#generic-navigation) API for building entirely custom navigation models.
+
+<Note>
+  You can have more than one navigation model inside a single parent component. When you use two or more models of the same kind in one component (e.g., two Child Stacks), you must pass a unique `key` argument to each one.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Child Stack" icon="layers" href="/navigation/child-stack">
+    A back stack of child components with automatic back-button handling, deep linking, and browser history integration.
+  </Card>
+  <Card title="Child Slot" icon="square" href="/navigation/child-slot">
+    Display zero or one child component at a time — ideal for dialogs, drawers, and bottom sheets.
+  </Card>
+  <Card title="Child Pages" icon="book-open" href="/navigation/child-pages">
+    A list of components with one selected — the natural fit for pager and tab navigation.
+  </Card>
+  <Card title="Child Panels" icon="layout-panel-left" href="/navigation/child-panels">
+    Multi-pane navigation with Main, Details, and Extra panels for adaptive layouts.
+  </Card>
+  <Card title="Child Items" icon="list" href="/navigation/child-items">
+    An arbitrary list of components with per-item lifecycle control, suited for lazy lists.
+  </Card>
+  <Card title="Web Navigation" icon="globe" href="/navigation/web-navigation">
+    Synchronize browser URL and history with Child Stack, Child Pages, or Child Panels.
+  </Card>
+</CardGroup>
+
+## Component configurations and child factories
+
+The term *configuration* is central to all Decompose navigation. A configuration is a persistent class that represents a specific child component and carries all of its constructor arguments (not dependencies). Decompose automatically persists child configurations using `StateKeeper`, so child components are recreated correctly after Android configuration changes or process death.
+
+Navigation is initialized by supplying a *child factory* function with the signature `(Config, ComponentContext) -> Child`. When you trigger navigation by passing a configuration to a navigation method, Decompose creates and manages a `ComponentContext` for every child component and calls the factory when a new instance is required. The factory is where you instantiate child components and inject dependencies; the configuration only provides persistent arguments and acts as the component's identity.
+
+### Configuration requirements
+
+All configurations must satisfy three requirements:
+
+1. **Be immutable** — configurations must not change after creation.
+2. **Correctly implement `equals()` and `hashCode()`** — Decompose uses equality to compare configurations and detect duplicates.
+3. **Be `@Serializable`** (or implement `Parcelable`) — configurations are persisted via [kotlinx-serialization](https://github.com/Kotlin/kotlinx.serialization) so that navigation state survives process death and Android configuration changes.
+
+It is recommended to define configurations as `data class` or `data object` and use only `val` properties with immutable data structures. Using `data class` automatically provides correct `equals`, `hashCode`, and `copy` implementations.
+
+### `@Serializable` configurations
+
+```kotlin
+import kotlinx.serialization.Serializable
+
+@Serializable
+sealed class Config {
+    @Serializable
+    data object List : Config()
+
+    @Serializable
+    data class Details(val itemId: Long) : Config()
+}
+```
+
+Decompose relies on `kotlinx-serialization` for persistence. Each configuration class must be annotated with `@Serializable`, or you must provide a custom serializer. Make sure you have [set up](https://github.com/Kotlin/kotlinx.serialization#setup) `kotlinx-serialization` and applied the Gradle plugin.
+
+<Warning>
+  On Android the amount of data that can be preserved in the saved state is [limited](https://developer.android.com/guide/components/activities/parcelables-and-bundles). Keep the size of your configurations small — store only IDs and primitive arguments, not large objects.
+</Warning>
+
+## Navigation and the main thread
+
+The navigation API is technically thread-safe and can be called from any thread, but it is strongly recommended to initialize and perform all navigation on the **Main thread**. Navigation is performed synchronously: Decompose instantiates components and calls lifecycle callbacks on the calling thread. Navigating from a background thread can cause unexpected behavior.
+
+<Warning>
+  Always initialize and perform navigation on the Main thread.
+</Warning>
+
+Decompose detects navigation calls on non-main threads and invokes the `onDecomposeError` error handler. By default this handler logs the exception; you can override it with your own implementation.
+
+## Duplicate configurations
+
+By default, having duplicate configurations (by equality) within a navigation model is prohibited — Decompose throws an exception when duplicates are detected. Duplicate configuration support can be enabled globally via `DecomposeSettings.duplicateConfigurationsEnabled`:
+
+```kotlin
+import com.arkivanov.decompose.DecomposeSettings
+
+DecomposeSettings.duplicateConfigurationsEnabled = true
+```
+
+<Note>
+  Duplicate configuration support is stable since version `3.5.0-alpha01`. On earlier versions, use the `DecomposeExperimentFlags.duplicateConfigurationsEnabled` flag instead.
+</Note>
+
+When this mode is enabled, Decompose does not throw errors on duplicate configurations and tries to handle them gracefully.
+
+<Warning>
+  The `Child Items` navigation model does **not** support duplicate configurations regardless of this setting. `IllegalStateException` is thrown if duplicates are detected.
+</Warning>
+
+## Generic Navigation
+
+When none of the predefined navigation models fit your requirements, Decompose provides a Generic Navigation API based on the `NavState` and `ChildNavState` interfaces. You implement `NavState` to describe the full navigation state, and `ChildNavState` to describe each child's configuration and lifecycle status (`RESUMED`, `STARTED`, `CREATED`, or `DESTROYED`).
+
+The `ComponentContext.children(...)` extension function is the entry point for generic navigation. All existing built-in navigation models are implemented on top of this API, so you can follow their source code as a reference.
+
+```kotlin
+import com.arkivanov.decompose.router.children.children
+import com.arkivanov.decompose.router.children.NavState
+import com.arkivanov.decompose.router.children.SimpleChildNavState
+
+// Example: a stack that can be empty (unlike Child Stack)
+fun <C : Any, T : Any> ComponentContext.emptyableStack(
+    source: NavigationSource<(List<C>) -> List<C>>,
+    serializer: KSerializer<C>,
+    childFactory: (C, ComponentContext) -> T,
+): Value<List<Child.Created<C, T>>> =
+    children(
+        source = source,
+        stateSerializer = StackNavState.serializer(serializer),
+        initialState = { StackNavState(emptyList()) },
+        key = "EmptyableStack",
+        navTransformer = { state, event -> StackNavState(event(state.items)) },
+        stateMapper = { _, children ->
+            @Suppress("UNCHECKED_CAST")
+            children as List<Child.Created<C, T>>
+        },
+        backTransformer = { state ->
+            state.items.takeUnless(List<*>::isEmpty)
+                ?.let { items -> { StackNavState(items.dropLast(1)) } }
+        },
+        childFactory = childFactory,
+    )
+```

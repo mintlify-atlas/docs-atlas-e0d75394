@@ -1,0 +1,197 @@
+---
+title: "Child Slot: Single Optional Child Component in Decompose"
+description: "Show, replace, or dismiss a single optional child in Decompose with Child Slot. Ideal for dialogs, drawers, and bottom sheets in Kotlin Multiplatform apps."
+---
+
+Child Slot is a Decompose navigation model that manages at most one child component at any given time. You can activate a component, swap it for a different one, or dismiss it entirely. Unlike Child Stack, there is no back stack — the slot either holds an active child or is empty.
+
+Common use cases include modal dialogs, bottom sheets, side drawers, and any overlay that should appear on top of the existing UI and disappear when dismissed.
+
+## Core concepts
+
+Child Slot is built from two types:
+
+- **`ChildSlot<C, T>`** — a data class with a single `child` property of type `Child.Created<C, T>?`. When `child` is `null`, the slot is empty. When it is non-null, the wrapped component is `RESUMED`.
+- **`SlotNavigation<C>`** — the mutable handle you call navigation operations on. It implements `SlotNavigator<C>`, which exposes a low-level `navigate(transformer, onComplete)` method. In practice you will use the `activate` and `dismiss` extension functions.
+
+## Setting up Child Slot
+
+<Steps>
+  <Step title="Create a SlotNavigation instance">
+    ```kotlin
+    private val dialogNavigation = SlotNavigation<DialogConfig>()
+    ```
+  </Step>
+  <Step title="Call childSlot() on ComponentContext">
+    ```kotlin
+    val dialog: Value<ChildSlot<*, DialogComponent>> =
+        childSlot(
+            source = dialogNavigation,
+            serializer = DialogConfig.serializer(), // null to disable state saving
+            handleBackButton = true, // dismiss on back press
+        ) { config, childComponentContext ->
+            DefaultDialogComponent(
+                componentContext = childComponentContext,
+                message = config.message,
+                onDismissed = dialogNavigation::dismiss,
+            )
+        }
+    ```
+  </Step>
+  <Step title="Observe in the UI">
+    Observe the `Value<ChildSlot>` and conditionally render the child based on whether `dialog.value.child` is non-null.
+  </Step>
+</Steps>
+
+### childSlot() parameters
+
+<ParamField path="source" type="NavigationSource<SlotNavEvent<C>>" required>
+  The `SlotNavigation` instance that drives this slot.
+</ParamField>
+
+<ParamField path="serializer" type="KSerializer<C>?">
+  A kotlinx-serialization serializer for the configuration type. Pass `null` to opt out of navigation state persistence; the slot will be empty on process recreation.
+</ParamField>
+
+<ParamField path="initialConfiguration" type="() -> C?">
+  Optional factory that returns the initial configuration. When `null` (the default), the slot starts empty.
+</ParamField>
+
+<ParamField path="key" type="String" default="DefaultChildSlot">
+  Unique key within the parent component. Required when you have two or more Child Slots in the same parent.
+</ParamField>
+
+<ParamField path="handleBackButton" type="Boolean" default="false">
+  When `true`, Decompose automatically calls `dismiss` when the system back button is pressed while the slot holds a child.
+</ParamField>
+
+<ParamField path="childFactory" type="(C, ComponentContext) -> T">
+  Factory function called to create the child component whenever the slot is activated.
+</ParamField>
+
+## Navigation operations
+
+### activate(configuration)
+
+Activates the child component described by the provided configuration. If a child was already active, it is destroyed first before the new one is created.
+
+```kotlin
+dialogNavigation.activate(DialogConfig(message = "Are you sure?"))
+```
+
+### dismiss
+
+Destroys the currently active child component, leaving the slot empty. Safe to call when the slot is already empty.
+
+```kotlin
+dialogNavigation.dismiss()
+```
+
+## Full example
+
+<CodeGroup>
+
+```kotlin DialogComponent.kt
+import com.arkivanov.decompose.ComponentContext
+
+interface DialogComponent {
+    val message: String
+    fun onDismissClicked()
+}
+
+class DefaultDialogComponent(
+    componentContext: ComponentContext,
+    override val message: String,
+    private val onDismissed: () -> Unit,
+) : DialogComponent, ComponentContext by componentContext {
+
+    override fun onDismissClicked() {
+        onDismissed()
+    }
+}
+```
+
+```kotlin DefaultRootComponent.kt
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.router.slot.ChildSlot
+import com.arkivanov.decompose.router.slot.SlotNavigation
+import com.arkivanov.decompose.router.slot.activate
+import com.arkivanov.decompose.router.slot.childSlot
+import com.arkivanov.decompose.router.slot.dismiss
+import com.arkivanov.decompose.value.Value
+import kotlinx.serialization.Serializable
+
+interface RootComponent {
+    val dialog: Value<ChildSlot<*, DialogComponent>>
+
+    fun showDialog(message: String)
+}
+
+class DefaultRootComponent(
+    componentContext: ComponentContext,
+) : RootComponent, ComponentContext by componentContext {
+
+    private val dialogNavigation = SlotNavigation<DialogConfig>()
+
+    override val dialog: Value<ChildSlot<*, DialogComponent>> =
+        childSlot(
+            source = dialogNavigation,
+            serializer = DialogConfig.serializer(),
+            handleBackButton = true,
+        ) { config, childComponentContext ->
+            DefaultDialogComponent(
+                componentContext = childComponentContext,
+                message = config.message,
+                onDismissed = dialogNavigation::dismiss,
+            )
+        }
+
+    override fun showDialog(message: String) {
+        dialogNavigation.activate(DialogConfig(message = message))
+    }
+
+    @Serializable
+    private data class DialogConfig(val message: String)
+}
+```
+
+</CodeGroup>
+
+## Multiple Child Slots in one component
+
+When a component hosts more than one `Child Slot`, supply a unique `key` to each:
+
+```kotlin
+private val topSlot = childSlot<TopConfig, TopChild>(
+    source = topNavigation,
+    key = "TopSlot",
+    // ...
+)
+
+private val bottomSlot = childSlot<BottomConfig, BottomChild>(
+    source = bottomNavigation,
+    key = "BottomSlot",
+    // ...
+)
+```
+
+## Use cases
+
+<CardGroup cols={2}>
+  <Card title="Modal dialog" icon="message-square">
+    Activate a slot to show a confirmation dialog. Pass `handleBackButton = true` so the back gesture dismisses it automatically.
+  </Card>
+  <Card title="Bottom sheet" icon="panel-bottom">
+    Drive a `ModalBottomSheetLayout` from a slot. `ChildSlot.child` being `null` maps directly to the hidden state.
+  </Card>
+  <Card title="Side drawer" icon="sidebar">
+    Show and hide a navigation drawer without managing boolean visibility flags in the parent component.
+  </Card>
+  <Card title="Contextual overlay" icon="layers">
+    Swap one overlay for another by calling `activate` with a different configuration — no intermediate `dismiss` required.
+  </Card>
+</CardGroup>
+
+<Note>
+  The child component inside a slot is always `RESUMED` when active. There is no stopped-but-retained state, unlike entries in a Child Stack back stack. When you call `activate` with a new configuration, the previous child is fully destroyed.
+</Note>

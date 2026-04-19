@@ -1,0 +1,207 @@
+---
+title: "Installing Decompose in Your Kotlin Multiplatform Project"
+description: "Add Decompose and its extension modules to your KMP project via Gradle. Covers all modules, supported targets, and iOS framework export configuration."
+---
+
+Decompose is published to Maven Central and provides several Gradle modules for different use cases. This page covers every available module — the main `decompose` module, Compose extensions, Android Views support, JetpackComponentContext — and explains how to export Decompose to an iOS framework using either a regular framework or CocoaPods.
+
+<Note>
+  Replace `<version>` with the latest Decompose release and `<essenty_version>` with the matching Essenty version. Check [Maven Central](https://central.sonatype.com/artifact/com.arkivanov.decompose/decompose) for the current release.
+</Note>
+
+## Main `decompose` module
+
+The `decompose` module is the core dependency. It provides:
+
+- **`ComponentContext`** — lifecycle, state preservation, instance retaining, and back-button handling for each component
+- **`Value` / `MutableValue`** — multiplatform observable state holder with Swift-friendly interop
+- **Child Stack** — stack navigation model
+- **`defaultComponentContext`** — creates a `ComponentContext` bound to an Android `Activity` or `Fragment`
+
+Add it to the `commonMain` dependencies of your shared module. If you have an Android module (`androidApp` or `composeApp`), also add it to the Android module's `android.dependencies` block so Android-specific code can access the APIs directly.
+
+<Tabs>
+  <Tab title="Kotlin DSL">
+    ```kotlin build.gradle.kts
+    // Shared module — commonMain
+    kotlin {
+        sourceSets {
+            commonMain.dependencies {
+                implementation("com.arkivanov.decompose:decompose:<version>")
+            }
+        }
+    }
+
+    // Android module (if separate)
+    dependencies {
+        implementation("com.arkivanov.decompose:decompose:<version>")
+    }
+    ```
+  </Tab>
+  <Tab title="Groovy DSL">
+    ```groovy build.gradle
+    // Shared module — commonMain
+    kotlin {
+        sourceSets {
+            commonMain {
+                dependencies {
+                    implementation "com.arkivanov.decompose:decompose:<version>"
+                }
+            }
+        }
+    }
+
+    // Android module (if separate)
+    dependencies {
+        implementation "com.arkivanov.decompose:decompose:<version>"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+  The `decompose` module depends on [Essenty](https://github.com/arkivanov/Essenty) via an `api` dependency, so modules like `Lifecycle`, `StateKeeper`, and `InstanceKeeper` are available without adding them separately. Familiarise yourself with Essenty to understand the full set of available APIs.
+</Info>
+
+## Compose extensions
+
+Decompose provides extensions for both [Jetpack Compose](https://developer.android.com/jetpack/compose) (Android-only) and [Multiplatform Compose](https://github.com/JetBrains/compose-multiplatform) (maintained by JetBrains and Google). Because Decompose depends on Multiplatform Compose, the `extensions-compose` module is compatible with both variants.
+
+These extensions connect Compose UI to Decompose components — for example, `subscribeAsState` for observing `Value` in a composable and `Children` for rendering a `ChildStack`.
+
+<Tabs>
+  <Tab title="Kotlin DSL">
+    ```kotlin build.gradle.kts
+    implementation("com.arkivanov.decompose:extensions-compose:<version>")
+    ```
+  </Tab>
+  <Tab title="Groovy DSL">
+    ```groovy build.gradle
+    implementation "com.arkivanov.decompose:extensions-compose:<version>"
+    ```
+  </Tab>
+</Tabs>
+
+**Supported targets:** Android, JVM/Desktop, Native/iOS, Native/macOS, JS/Canvas, JS/Wasm.
+
+### Experimental Compose extensions
+
+A smaller set of experimental extensions enables additional features such as shared element transitions. These are published separately and may have breaking changes between releases.
+
+<Tabs>
+  <Tab title="Kotlin DSL">
+    ```kotlin build.gradle.kts
+    implementation("com.arkivanov.decompose:extensions-compose-experimental:<version>")
+    ```
+  </Tab>
+  <Tab title="Groovy DSL">
+    ```groovy build.gradle
+    implementation "com.arkivanov.decompose:extensions-compose-experimental:<version>"
+    ```
+  </Tab>
+</Tabs>
+
+**Supported targets:** Android, JVM/Desktop, Native/iOS, Native/macOS, JS/Canvas, JS/Wasm.
+
+<Warning>
+  Experimental extensions may change their API without notice. Pin a specific version and review the changelog before upgrading.
+</Warning>
+
+## Android Views extensions
+
+The `extensions-android` module connects Android Views (the XML layout system, as opposed to Compose) to Decompose components. Use this if your Android UI is not yet migrated to Compose.
+
+<Tabs>
+  <Tab title="Kotlin DSL">
+    ```kotlin build.gradle.kts
+    implementation("com.arkivanov.decompose:extensions-android:<version>")
+    ```
+  </Tab>
+  <Tab title="Groovy DSL">
+    ```groovy build.gradle
+    implementation "com.arkivanov.decompose:extensions-android:<version>"
+    ```
+  </Tab>
+</Tabs>
+
+## JetpackComponentContext
+
+If you want to use AndroidX Architecture Components — specifically AndroidX `Lifecycle`, `ViewModel`, and Saved State — alongside Decompose, the `jetpack-component-context` module provides a `JetpackComponentContext` that bridges the two systems.
+
+<Tabs>
+  <Tab title="Kotlin DSL">
+    ```kotlin build.gradle.kts
+    implementation("com.arkivanov.decompose:jetpack-component-context:<version>")
+    ```
+  </Tab>
+  <Tab title="Groovy DSL">
+    ```groovy build.gradle
+    implementation "com.arkivanov.decompose:jetpack-component-context:<version>"
+    ```
+  </Tab>
+</Tabs>
+
+## Exporting Decompose to an iOS framework
+
+To use Decompose APIs from Swift code on iOS, you must export the `decompose` artifact (and the Essenty `lifecycle` artifact) from your iOS framework. Choose the approach that matches your build setup.
+
+<Steps>
+  <Step title="Decide on your iOS framework approach">
+    Determine whether your project uses a regular Kotlin/Native framework (`binaries.framework`) or CocoaPods integration (`cocoapods { }`). Both approaches require the same `export` calls; only the Gradle DSL block differs.
+  </Step>
+  <Step title="Add exports to your framework configuration">
+
+    <Tabs>
+      <Tab title="Regular framework">
+        ```kotlin build.gradle.kts
+        kotlin {
+            targets
+                .filterIsInstance<KotlinNativeTarget>()
+                .filter { it.konanTarget.family == Family.IOS }
+                .forEach {
+                    it.binaries.framework {
+                        export("com.arkivanov.decompose:decompose:<version>")
+                        export("com.arkivanov.essenty:lifecycle:<essenty_version>")
+
+                        // Optional: only needed for state preservation on Darwin targets
+                        export("com.arkivanov.essenty:state-keeper:<essenty_version>")
+                    }
+                }
+        }
+        ```
+      </Tab>
+      <Tab title="CocoaPods">
+        ```kotlin build.gradle.kts
+        kotlin {
+            cocoapods {
+                framework {
+                    export("com.arkivanov.decompose:decompose:<version>")
+                    export("com.arkivanov.essenty:lifecycle:<essenty_version>")
+
+                    // Optional: only needed for state preservation on Darwin targets
+                    export("com.arkivanov.essenty:state-keeper:<essenty_version>")
+                }
+            }
+        }
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Add the Essenty artifacts as api dependencies">
+    The `export` call requires that the artifact also be declared as an `api` dependency in `commonMain` (or the appropriate iOS source set), not just `implementation`. Ensure both `decompose` and `essenty:lifecycle` are declared with `api(...)` if you need them exported.
+  </Step>
+</Steps>
+
+<Note>
+  The `state-keeper` export is optional. Add it only if your app needs automatic state preservation across process death on Apple targets.
+</Note>
+
+## Module summary
+
+| Module | Purpose | Supported targets |
+|--------|---------|-------------------|
+| `decompose` | Core — ComponentContext, Value, navigation | All targets |
+| `extensions-compose` | Compose UI integration | Android, JVM, iOS, macOS, JS, Wasm |
+| `extensions-compose-experimental` | Experimental Compose features (shared transitions, etc.) | Android, JVM, iOS, macOS, JS, Wasm |
+| `extensions-android` | Android Views integration | Android only |
+| `jetpack-component-context` | AndroidX Lifecycle / ViewModel bridge | Android only |

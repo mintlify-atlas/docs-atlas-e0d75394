@@ -1,0 +1,307 @@
+---
+title: "Component Overview: Architecture and ComponentContext API"
+description: "Understand how Decompose components work, what ComponentContext provides, how to create a root context per platform, and how Value and MutableValue expose state streams."
+---
+
+In Decompose, a component is a plain Kotlin class — no base class to extend, no framework type to implement. It encapsulates business logic and optionally manages child components, each with its own independently managed lifecycle. UI is entirely pluggable from the outside; components do not depend on any UI layer, which keeps the UI thin, maximises code sharing across platforms, and makes components straightforward to unit-test without instrumentation.
+
+## What a component is
+
+A component can be as simple as an empty class:
+
+```kotlin
+class RootComponent
+```
+
+When a component needs lifecycle management, state preservation, instance retention, or back-button handling, it accepts a `ComponentContext` via its constructor. The delegation pattern brings every API directly into `this` scope:
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+
+class RootComponent(
+    componentContext: ComponentContext
+) : ComponentContext by componentContext {
+
+    // lifecycle, stateKeeper, instanceKeeper, backHandler all in scope
+}
+```
+
+Extracting an interface is recommended. It enables test doubles, Compose previews, and SwiftUI previews without wiring up a full component context:
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+
+interface RootComponent
+
+class DefaultRootComponent(
+    componentContext: ComponentContext
+) : RootComponent, ComponentContext by componentContext {
+
+    // implementation here
+}
+```
+
+## ComponentContext
+
+`ComponentContext` extends `GenericComponentContext`, which itself extends four Essenty interfaces. The `decompose` module exposes all of them as `api` dependencies, so you never need to add them separately.
+
+| Interface | Property | What it gives you |
+|---|---|---|
+| `LifecycleOwner` | `lifecycle` | Observe create / start / resume / pause / stop / destroy events |
+| `StateKeeperOwner` | `stateKeeper` | Persist serializable state across process death and configuration changes |
+| `InstanceKeeperOwner` | `instanceKeeper` | Retain arbitrary object instances across Android configuration changes (like `ViewModel`) |
+| `BackHandlerOwner` | `backHandler` | Register callbacks that intercept system or hardware back-button events |
+
+The `ComponentContext` interface itself is minimal:
+
+```kotlin
+interface ComponentContext : GenericComponentContext<ComponentContext>
+```
+
+The concrete type is `DefaultComponentContext`:
+
+```kotlin
+class DefaultComponentContext(
+    override val lifecycle: Lifecycle,
+    stateKeeper: StateKeeper? = null,
+    instanceKeeper: InstanceKeeper? = null,
+    backHandler: BackHandler? = null,
+) : ComponentContext
+```
+
+## Component hierarchy
+
+Components form a tree. Each parent component creates child `ComponentContext` instances for its children using `childContext()`. A child's lifecycle is always bounded by its parent's lifecycle — a child can never outlive its parent. The UI hierarchy mirrors the component hierarchy but is kept entirely separate. This means the same component tree can be rendered by Compose, SwiftUI, or any other UI toolkit simultaneously or interchangeably.
+
+## Root ComponentContext
+
+The root component and its `ComponentContext` must always be created on the UI thread.
+
+<Warning>
+  The root `ComponentContext` and the root component must always be created on the UI thread. Compositions in Jetpack/JetBrains Compose may run on background threads, so never create the root component inside a `Composable` function directly. If you must, wrap it in `remember`.
+</Warning>
+
+<Tabs>
+  <Tab title="Android (Activity)">
+    Use the `defaultComponentContext()` extension function inside `Activity.onCreate`. Call it exactly once per Activity lifetime.
+
+    <Warning>
+      `defaultComponentContext()` must be called only once during the lifetime of the host Activity or Fragment, typically in `onCreate`. Calling it a second time will crash.
+    </Warning>
+
+    ```kotlin
+    import android.os.Bundle
+    import androidx.appcompat.app.AppCompatActivity
+    import com.arkivanov.decompose.defaultComponentContext
+
+    class MainActivity : AppCompatActivity() {
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+
+            val root = DefaultRootComponent(defaultComponentContext())
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Android (Fragment)">
+    Use `defaultComponentContext(OnBackPressedDispatcher?)` inside `Fragment.onCreate`. Pass the activity's dispatcher to wire up hardware back-button support.
+
+    ```kotlin
+    import android.os.Bundle
+    import androidx.fragment.app.Fragment
+    import com.arkivanov.decompose.defaultComponentContext
+
+    class SomeFragment : Fragment() {
+        private lateinit var root: RootComponent
+
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+
+            root = DefaultRootComponent(
+                componentContext = defaultComponentContext(
+                    onBackPressedDispatcher = requireActivity().onBackPressedDispatcher
+                )
+            )
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Android with Compose">
+    Create the root component before starting Compose, in `Activity.onCreate`, so it is constructed on the main thread before any composition occurs.
+
+    ```kotlin
+    import android.os.Bundle
+    import androidx.activity.compose.setContent
+    import androidx.appcompat.app.AppCompatActivity
+    import com.arkivanov.decompose.defaultComponentContext
+
+    class MainActivity : AppCompatActivity() {
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+
+            // Create the root component before starting Compose
+            val root = DefaultRootComponent(componentContext = defaultComponentContext())
+
+            setContent {
+                // Pass root into your Composable tree
+            }
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Desktop (JVM/Compose)">
+    Use `runOnUiThread` to ensure construction on the UI thread before the Compose `application {}` block runs.
+
+    ```kotlin
+    import androidx.compose.ui.window.application
+    import com.arkivanov.decompose.DefaultComponentContext
+
+    fun main() {
+        // Create the root component on the UI thread before starting Compose
+        val root = runOnUiThread {
+            DefaultRootComponent(componentContext = DefaultComponentContext(lifecycle = ...))
+        }
+
+        application {
+            // The rest of the code
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Other platforms (Compose)">
+    Create the root component directly in `main`, before the `application {}` block. Ensure this happens on the UI thread.
+
+    ```kotlin
+    import androidx.compose.ui.window.application
+    import com.arkivanov.decompose.DefaultComponentContext
+
+    fun main() {
+        // Create the root component before starting Compose
+        val root = DefaultRootComponent(componentContext = DefaultComponentContext(lifecycle = ...))
+
+        application {
+            // The rest of the code
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Value and MutableValue
+
+`Value<T>` is Decompose's multiplatform observable state holder. It always holds a current value accessible via the `.value` property, and lets you subscribe to future updates:
+
+```kotlin
+abstract class Value<out T : Any> {
+    abstract val value: T
+    abstract fun subscribe(observer: (T) -> Unit): Cancellation
+}
+```
+
+`MutableValue<T>` is the writable variant. Use `MutableValue(initialValue)` to create one, and the `update {}` extension to mutate it atomically:
+
+```kotlin
+import com.arkivanov.decompose.value.MutableValue
+import com.arkivanov.decompose.value.Value
+import com.arkivanov.decompose.value.update
+
+private val _state = MutableValue(State())
+val state: Value<State> = _state
+
+fun increment() {
+    _state.update { it.copy(count = it.count + 1) }
+}
+```
+
+Both `Value` and `MutableValue` are thread-safe, but subscribe and update only on the main thread.
+
+### Why not StateFlow?
+
+Decompose uses `Value` to avoid a mandatory dependency on Kotlin coroutines. Projects may prefer Reaktive, RxJava, or other reactive libraries. `Value` is also a concrete class with a generic type parameter, which makes it usable from ObjC/Swift without type erasure issues. You can convert a `Value` to `StateFlow` at any time if you need coroutines interop.
+
+## Examples
+
+### Simple Counter component
+
+```kotlin
+import com.arkivanov.decompose.value.MutableValue
+import com.arkivanov.decompose.value.Value
+import com.arkivanov.decompose.value.update
+
+class Counter {
+    private val _state = MutableValue(State())
+    val state: Value<State> = _state
+
+    fun increment() {
+        _state.update { it.copy(count = it.count + 1) }
+    }
+
+    data class State(val count: Int = 0)
+}
+```
+
+### Jetpack/JetBrains Compose UI
+
+Use `subscribeAsState()` from the Compose extensions module to observe a `Value` as Compose `State`:
+
+```kotlin
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material.Button
+import androidx.compose.material.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import com.arkivanov.decompose.extensions.compose.subscribeAsState
+
+@Composable
+fun CounterContent(counter: Counter) {
+    val state by counter.state.subscribeAsState()
+
+    Column {
+        Text(text = state.count.toString())
+
+        Button(onClick = counter::increment) {
+            Text("Increment")
+        }
+    }
+}
+```
+
+### SwiftUI
+
+`StateValue` is a property wrapper for Decompose's `Value` that makes it observable in SwiftUI. It must be copied into your project from the [DecomposeHelpers](https://github.com/arkivanov/Decompose/blob/master/sample/app-ios/app-ios/DecomposeHelpers/) folder, as it cannot be shipped as a compiled framework.
+
+```swift
+struct CounterView: View {
+    private let counter: Counter
+
+    @StateValue
+    private var state: CounterState
+
+    init(_ counter: Counter) {
+        self.counter = counter
+        _state = StateValue(counter.state)
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(state.value.text)
+            Button(action: counter.increment, label: { Text("Increment") })
+        }
+    }
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Lifecycle" icon="rotate" href="/component/lifecycle">
+    Understand lifecycle states, events, and how child lifecycles relate to parent lifecycles.
+  </Card>
+  <Card title="State preservation" icon="floppy-disk" href="/component/state-preservation">
+    Persist component state across process death and configuration changes.
+  </Card>
+  <Card title="Instance retaining" icon="layer-group" href="/component/instance-retaining">
+    Retain objects across Android configuration changes, like AndroidX ViewModel.
+  </Card>
+  <Card title="Child components" icon="sitemap" href="/component/child-components">
+    Compose components into trees using childContext() and permanent children.
+  </Card>
+</CardGroup>

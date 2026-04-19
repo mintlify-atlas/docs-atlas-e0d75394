@@ -1,0 +1,130 @@
+---
+title: "Instance Retaining in Decompose: InstanceKeeper API Guide"
+description: "Retain objects across Android configuration changes using the InstanceKeeper API, the retainedInstance shortcut, and the retainedComponent function for whole-component retention."
+---
+
+Decompose provides a multiplatform alternative to AndroidX `ViewModel` through the `InstanceKeeper` API from the [Essenty](https://github.com/arkivanov/Essenty) library. When Android recreates an Activity due to a configuration change — screen rotation, language switch, and so on — retained instances survive in memory while the component and its host are destroyed and recreated. The `ComponentContext` interface extends `InstanceKeeperOwner`, giving every component access to an `instanceKeeper` property. The `decompose` module includes Essenty's `instance-keeper` module as an `api` dependency, so no extra Gradle configuration is needed.
+
+## How InstanceKeeper works
+
+Call `instanceKeeper.getOrCreate { ... }` with a factory lambda. On the first call the lambda runs and the instance is stored. On subsequent calls (after a configuration change) the existing instance is returned and the lambda is skipped. When the component is permanently destroyed — not just recreated — `onDestroy()` is called on the retained instance.
+
+## Basic usage
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.instancekeeper.InstanceKeeper
+import com.arkivanov.essenty.instancekeeper.getOrCreate
+
+class SomeComponent(
+    componentContext: ComponentContext
+) : ComponentContext by componentContext {
+
+    private val someLogic = instanceKeeper.getOrCreate { SomeLogic() }
+
+    /*
+     * Instances of this class will be retained (not destroyed on configuration changes).
+     * This is equivalent to AndroidX ViewModel.
+     * ⚠️ Pay attention to not leak any dependencies,
+     * e.g. don't make this class `inner`, and don't pass dependencies like Activity Context into it.
+     */
+    private class SomeLogic : InstanceKeeper.Instance {
+        override fun onDestroy() {
+            // Clean-up
+        }
+    }
+}
+```
+
+<Warning>
+  Never make a retained class an `inner` class of your component, and never pass Android `Context`, `Activity`, or `Fragment` references into retained instances. These objects are recreated on configuration changes, and holding a reference to the old one causes a memory leak.
+</Warning>
+
+## Simplified usage with retainedInstance
+
+The `retainedInstance {}` extension is a shorthand over `instanceKeeper.getOrCreate {}` that reduces boilerplate.
+
+<Warning>
+  The `retainedInstance` API is experimental since version `3.2.0-alpha02`, stable since `3.2.0`.
+</Warning>
+
+```kotlin
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.essenty.instancekeeper.InstanceKeeper
+import com.arkivanov.essenty.instancekeeper.retainedInstance
+
+class SomeComponent(
+    componentContext: ComponentContext
+) : ComponentContext by componentContext {
+
+    private val someLogic = retainedInstance { SomeLogic() }
+
+    private class SomeLogic : InstanceKeeper.Instance {
+        override fun onDestroy() {
+            // Clean-up
+        }
+    }
+}
+```
+
+## Implementing InstanceKeeper.Instance
+
+Any class you want to retain must implement `InstanceKeeper.Instance`. The single required method is `onDestroy()`, which is called when the component is permanently destroyed (not on configuration changes):
+
+```kotlin
+class SomeLogic : InstanceKeeper.Instance {
+    // Your business logic, coroutine scopes, state, etc.
+
+    override fun onDestroy() {
+        // Cancel coroutine scopes, close connections, release resources
+    }
+}
+```
+
+<Tip>
+  Think of `onDestroy()` as the equivalent of `ViewModel.onCleared()`. Use it to cancel any coroutine scopes or Reaktive disposables that the retained instance owns.
+</Tip>
+
+## Retained components on Android
+
+Although discouraged, you can retain the entire root component across configuration changes using `retainedComponent()` in an Activity. This is an Android-only API that stores the whole `DefaultRootComponent` — including its `ComponentContext` — in a `ViewModel`.
+
+<Warning>
+  `retainedComponent()` must only be called once during the lifetime of the host Activity or Fragment, typically in `onCreate`. Calling it a second time will crash.
+</Warning>
+
+<Warning>
+  When using retained components, be careful not to pass any dependency that captures the hosting Activity or Fragment into the component constructor, as the Activity instance changes on every configuration change.
+</Warning>
+
+```kotlin
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import com.arkivanov.decompose.retainedComponent
+
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val root =
+            retainedComponent { componentContext ->
+                DefaultRootComponent(componentContext)
+            }
+    }
+}
+```
+
+When `retainedComponent()` is used, the entire component tree survives configuration changes in memory. This means `InstanceKeeper` is not needed inside those components (there is nothing to retain — they are never recreated). However, `StateKeeper` is still useful for surviving process death.
+
+## Combining instance retaining with state preservation
+
+For the common case of a retained instance that also needs to survive process death, combine `retainedInstance {}` with the `saveable` delegate. See the [State preservation](/component/state-preservation#simplified-state-preservation-of-a-retained-instance) page for the full example.
+
+<CardGroup cols={2}>
+  <Card title="State preservation" icon="floppy-disk" href="/component/state-preservation">
+    Save and restore state across process death using StateKeeper and saveable.
+  </Card>
+  <Card title="Component overview" icon="puzzle-piece" href="/component/overview">
+    Review the full ComponentContext interface and DefaultComponentContext constructor.
+  </Card>
+</CardGroup>
